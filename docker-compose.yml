@@ -1,17 +1,24 @@
-version: "3"
+# docker-compose.yml
+
+version: "3.8"
+
 services:
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "3001:3001"
+      - "3001:3000" # Host:Container
     volumes:
       - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
     environment:
-      - PORT=3001
+      - PORT=3000
+    networks:
+      - app-network
+
   backend:
     build:
       context: .
@@ -20,3 +27,11 @@ services:
       - "5001:5001"
     volumes:
       - ./backend:/app
+    environment:
+      - PORT=5001
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

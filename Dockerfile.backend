@@ -1,6 +1,19 @@
-FROM python:3.8
+# Dockerfile.backend
+
+FROM python:3.10
+
+# Set working directory
 WORKDIR /app
+
+# Copy requirements and install dependencies
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the backend code
 COPY backend/ ./
+
+# Expose the backend port
+EXPOSE 5001
+
+# Start the backend application using SocketIO
 CMD ["python", "app.py"]

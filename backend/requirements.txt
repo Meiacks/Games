@@ -1,5 +1,4 @@
-Flask==3.0.0
-Flask-Cors==4.0.0
-Werkzeug==3.0.1
-quart==0.19.5
-quart-cors==0.7.0
+Flask>=2.2.5
+Flask-Cors>=3.0.10
+Flask-SocketIO>=5.3.3
+eventlet>=0.33.0
