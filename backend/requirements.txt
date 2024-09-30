@@ -1,0 +1,5 @@
+Flask==3.0.0
+Flask-Cors==4.0.0
+Werkzeug==3.0.1
+quart==0.19.5
+quart-cors==0.7.0
