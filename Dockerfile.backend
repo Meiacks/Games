@@ -5,7 +5,7 @@ FROM python:3.10
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Install dependencies
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -15,5 +15,10 @@ COPY backend/ ./
 # Expose the backend port
 EXPOSE 5001
 
-# Start the backend application using SocketIO
-CMD ["python", "app.py"]
+# Set environment variables for Flask
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=development
+ENV PYTHONUNBUFFERED=1
+
+# Start the backend application with watchmedo for auto-reloading
+CMD ["watchmedo", "auto-restart", "--patterns=*.py;*.json", "--recursive", "--", "python", "app.py"]

@@ -7,7 +7,7 @@ FROM node:18
 # Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
+# Install dependencies first for better caching
 COPY frontend/package*.json ./
 
 # Install dependencies
@@ -16,10 +16,15 @@ RUN npm install
 # Copy the rest of the frontend code
 COPY frontend/ ./
 
+# Set environment variables for React
+ENV PORT=3000
+ENV CHOKIDAR_USEPOLLING=true
+ENV HOST=0.0.0.0
+
 # Expose the port the app runs on
 EXPOSE 3000
 
-# Start the frontend application
+# Start the frontend application in development mode
 CMD ["npm", "start"]
 
 Dockerfile.backend:
@@ -31,7 +36,7 @@ FROM python:3.10
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Install dependencies first for better caching
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -41,12 +46,15 @@ COPY backend/ ./
 # Expose the backend port
 EXPOSE 5001
 
-# Start the backend application using SocketIO
+# Set environment variables for Flask
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=development
+ENV PYTHONUNBUFFERED=1
+
+# Start the backend application with debug and reloader
 CMD ["python", "app.py"]
 
 docker-compose.yml:
-
-# docker-compose.yml
 
 version: "3.8"
 
@@ -60,10 +68,14 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-    depends_on:
-      - backend
     environment:
       - PORT=3000
+      - CHOKIDAR_USEPOLLING=true
+      - HOST=0.0.0.0
+      - WDS_SOCKET_HOST=57.129.44.194
+      - WDS_SOCKET_PORT=3001
+    depends_on:
+      - backend
     networks:
       - app-network
 
@@ -77,6 +89,9 @@ services:
       - ./backend:/app
     environment:
       - PORT=5001
+      - FLASK_ENV=development
+      - FLASK_APP=app.py
+      - PYTHONUNBUFFERED=1
     networks:
       - app-network
 
@@ -88,23 +103,21 @@ backend/app.py:
 
 # backend/app.py
 
-import eventlet
-eventlet.monkey_patch()
-
+import os, json, uuid, logging, eventlet, threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room, emit
-import uuid
-import logging
-import json
-import os
-import threading
+eventlet.monkey_patch()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Enable debug mode
+app.config['DEBUG'] = True
+app.config['ENV'] = 'development'
 
 # Initialize extensions
 CORS(app, resources={r"/*": {"origins": "http://57.129.44.194:3001"}})
@@ -158,7 +171,7 @@ def get_leaderboard():
 def submit_score():
     try:
         data = request.json
-        name = data.get('name', 'Anonymous')
+        name = data.get('name', 'noname')
         score = data.get('score', 0)
 
         scores = read_scores()
@@ -273,8 +286,7 @@ def determine_result(move1, move2):
         return ('You Lose!', 'You Win!')
 
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
-
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True, use_reloader=True)
 backend/requirements.txt:
 
 Flask>=2.2.5
@@ -282,8 +294,6 @@ Flask-Cors>=3.0.10
 Flask-SocketIO>=5.3.3
 eventlet>=0.33.0
 frontend/src/App.js:
-
-// frontend/src/App.js
 
 import React, { useState, useEffect } from 'react';
 import './App.css';
@@ -301,6 +311,7 @@ function App() {
   const [hasSubmittedScore, setHasSubmittedScore] = useState(false);
   const [isOnline, setIsOnline] = useState(false);
   const [socket, setSocket] = useState(null);
+  const [roomId, setRoomId] = useState(null); // Store room ID
 
   // Initialize socket connection
   useEffect(() => {
@@ -317,6 +328,7 @@ function App() {
 
     newSocket.on('match_found', ({ room }) => {
       setIsOnline(true);
+      setRoomId(room); // Store the room ID
       setGameState('game');
       console.log(`Match found in room ${room}`);
     });
@@ -378,8 +390,9 @@ function App() {
 
   const handleChoice = (choice) => {
     setPlayerChoice(choice);
-    if (isOnline && socket) {
-      socket.emit('make_move', { move: choice, room: socket.id }); // Assuming room ID is socket.id for simplicity
+    if (isOnline && socket && roomId) {
+      // Use the stored roomId when emitting the move
+      socket.emit('make_move', { move: choice, room: roomId });
     } else {
       // Play against AI
       const aiChoices = ['Rock', 'Paper', 'Scissors'];
@@ -405,9 +418,9 @@ function App() {
 
   const submitScore = () => {
     const score = result === 'You Win!' ? 1 : result === 'You Lose!' ? -1 : 0;
-    const trimmedName = name.trim() || 'Anonymous';
+    const trimmedName = name.trim() || 'noname';
 
-    if (trimmedName !== 'Anonymous') {
+    if (trimmedName !== 'noname') {
       localStorage.setItem('playerName', trimmedName);
     }
 
@@ -462,7 +475,7 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">
-        <p>Player: {name || 'Anonymous'}</p>
+        <p>Player: {name || 'noname'}</p>
       </header>
 
       <div className="App-content">
@@ -550,7 +563,6 @@ frontend/src/App.css:
 
 /* frontend/src/App.css */
 
-/* Reset styles */
 * {
   box-sizing: border-box;
   margin: 0;

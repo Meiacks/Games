@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Enable debug mode
+app.config['DEBUG'] = True
+app.config['ENV'] = 'development'
+
 # Initialize extensions
 CORS(app, resources={r"/*": {"origins": "http://57.129.44.194:3001"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
@@ -64,7 +68,7 @@ def get_leaderboard():
 def submit_score():
     try:
         data = request.json
-        name = data.get('name', 'Anonymous')
+        name = data.get('name', 'noname')
         score = data.get('score', 0)
 
         scores = read_scores()

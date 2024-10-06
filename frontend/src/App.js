@@ -121,9 +121,9 @@ function App() {
 
   const submitScore = () => {
     const score = result === 'You Win!' ? 1 : result === 'You Lose!' ? -1 : 0;
-    const trimmedName = name.trim() || 'Anonymous';
+    const trimmedName = name.trim() || 'noname';
 
-    if (trimmedName !== 'Anonymous') {
+    if (trimmedName !== 'noname') {
       localStorage.setItem('playerName', trimmedName);
     }
 
@@ -178,7 +178,7 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">
-        <p>Player: {name || 'Anonymous'}</p>
+        <p>Player: {name || 'noname'}</p>
       </header>
 
       <div className="App-content">

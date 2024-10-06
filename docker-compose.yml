@@ -1,5 +1,3 @@
-# docker-compose.yml
-
 version: "3.8"
 
 services:
@@ -12,10 +10,14 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-    depends_on:
-      - backend
     environment:
       - PORT=3000
+      - CHOKIDAR_USEPOLLING=true
+      - HOST=0.0.0.0
+      - WDS_SOCKET_HOST=57.129.44.194
+      - WDS_SOCKET_PORT=3001
+    depends_on:
+      - backend
     networks:
       - app-network
 
@@ -29,6 +31,9 @@ services:
       - ./backend:/app
     environment:
       - PORT=5001
+      - FLASK_ENV=development
+      - FLASK_APP=app.py
+      - PYTHONUNBUFFERED=1
     networks:
       - app-network
 
