@@ -1,26 +1,7 @@
-# Dockerfile.frontend
-
 FROM node:18
-
-# Set working directory
 WORKDIR /app
-
-# Install dependencies first for better caching
 COPY frontend/package*.json ./
-
-# Install dependencies
 RUN npm install
-
-# Copy the rest of the frontend code
 COPY frontend/ ./
-
-# Set environment variables for React
-ENV PORT=3000
-ENV CHOKIDAR_USEPOLLING=true
-ENV HOST=0.0.0.0
-
-# Expose the port the app runs on
 EXPOSE 3000
-
-# Start the frontend application in development mode
 CMD ["npm", "start"]

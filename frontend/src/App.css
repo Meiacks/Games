@@ -1,92 +1,104 @@
-/* frontend/src/App.css */
+/* MAIN */
 
 * {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+  background-color: #333;
+  color: #FFF;
 }
 
-body {
-  font-family: Arial, sans-serif;
-  height: 100vh;
-}
-
-.App {
+html, body {
   display: flex;
-  flex-direction: column;
-  align-items: center;
   justify-content: center;
+  align-items: center;
   height: 100%;
 }
 
-.App-header {
-  position: fixed;
-  top: 0;
-  width: 100%;
-  background-color: #4CAF50;
-  color: white;
-  padding: 10px 0;
-  text-align: center;
-  font-size: 18px;
-}
-
-.App-content {
-  margin-top: 60px;
+.app {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  width: 64vh;
+}
+
+@media (max-aspect-ratio: 0.64) {
+  .app {
+    width: 100vw;
+  }
+}
+
+.main_container {
+  flex: 1;
+  overflow-y: auto;
+  height: 100vh;
+}
+
+.menu_container {
+  display: flex;
+  justify-content: center;
+  height: 5vh;
+  padding: 1vh;
+}
+
+.text_display {
+  font-size: 2.5vh;
+  margin: 0 1vh;
+  text-align: center;
+}
+
+.button_container {
+  display: flex;
+  justify-content: center;
   align-items: center;
+  padding: 0.7vh;
+  flex-wrap: wrap;
 }
 
-button {
-  margin: 10px;
-  padding: 10px 20px;
-  font-size: 16px;
+.button,
+.highlighted_button {
+  border-color: #BBB;
+  border-radius: 1vh;
+  padding: 0.9vh 1.4vh;
+  margin: 0.3vh;
+  font-size: 2vh;
   cursor: pointer;
-  border: none;
-  border-radius: 5px;
-  background-color: #4CAF50;
-  color: white;
-  transition: background-color 0.3s;
 }
 
-button:hover {
-  background-color: #45a049;
+.highlighted_button {
+  background-color: #777;
 }
 
-button:disabled {
-  background-color: #a5d6a7;
-  cursor: not-allowed;
+/* SCROLLBAR */
+
+::-webkit-scrollbar {
+  width: 1vh;
 }
 
-input {
-  padding: 10px;
-  font-size: 14px;
-  margin: 10px 0;
-  border: 1px solid #ccc;
-  border-radius: 4px;
+::-webkit-scrollbar-thumb {
+  background: #CCC;
+  border-radius: 1vh;
 }
 
-h1,
-h2 {
-  margin: 20px 0 10px 0;
+::-webkit-scrollbar-track {
+  background: #888;
+  border-radius: 2vh;
+}
+
+/* BLABLA */
+
+.text_input {
+  border: 2px solid #BBB;
+  border-radius: 1vh;
+  padding: 0.9vh 1.4vh;
+  margin: 0.3vh;
+  font-size: 2vh;
 }
 
 .leaderboard {
-  list-style-type: none;
-  padding: 0;
-  max-height: 200px;
+  border: 2px solid #BBB;
+  border-radius: 2vh;
+  padding: 1vh;
+  margin: 3vh auto;
+  font-size: 2vh;
   overflow-y: auto;
-  width: 200px;
-  border: 1px solid #ccc;
-  border-radius: 5px;
-  padding: 10px;
-}
-
-.leaderboard li {
-  padding: 5px 0;
-  border-bottom: 1px solid #eee;
-}
-
-.leaderboard li:last-child {
-  border-bottom: none;
+  max-height: 50vh;
+  max-width: 50vw;
 }
