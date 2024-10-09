@@ -4,4 +4,4 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
 EXPOSE 5001
-CMD ["watchmedo", "auto-restart", "--patterns=*.py;*.json", "--recursive", "--", "python", "app.py"]
+CMD ["sh", "-c", "if [ \"$FLASK_ENV\" = \"development\" ]; then watchmedo auto-restart --patterns=\"*.py;*.json\" --recursive -- python app.py; else python app.py; fi"]

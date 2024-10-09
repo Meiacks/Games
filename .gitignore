@@ -1,3 +1,5 @@
+backend/leaderboard.json
 backend/test.py
+backend/__pycache__
 frontend/node_modules
 node_modules/

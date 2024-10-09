@@ -26,6 +26,8 @@ services:
       - "5001:5001"
     volumes:
       - ./backend:/app
+    environment:
+      - FLASK_ENV=development  #production
     networks:
       - app-network
 
