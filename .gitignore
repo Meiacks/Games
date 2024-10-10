@@ -1,5 +1,4 @@
-backend/leaderboard.json
-backend/rooms_history.json
+backend/db
 backend/test.py
 backend/__pycache__
 frontend/node_modules

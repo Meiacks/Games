@@ -1,233 +1,271 @@
-import React, { useState, useEffect } from 'react';
-import './App.css';
-import { io } from 'socket.io-client';
+// frontend/App.js
 
-const SOCKET_SERVER_URL = 'http://57.129.44.194:5001';
+import React, { useState, useEffect, useMemo } from "react";
+import "./App.css";
+import { io } from "socket.io-client";
+
+const SOCKET_SERVER_URL = "http://57.129.44.194:5001";
 
 function App() {
-  const [gameState, setGameState] = useState('menu');
+  const [gameState, setGameState] = useState("main_menu");
   const [playerChoice, setPlayerChoice] = useState(null);
   const [opponentChoice, setOpponentChoice] = useState(null);
-  const [result, setResult] = useState('');
+  const [result, setResult] = useState("");
   const [leaderboard, setLeaderboard] = useState([]);
-  const [name, setName] = useState('');
-  const [hasSubmittedScore, setHasSubmittedScore] = useState(false);
-  const [isOnline, setIsOnline] = useState(false);
+  const [name, setName] = useState("");
   const [socket, setSocket] = useState(null);
   const [roomId, setRoomId] = useState(null);
+  const [sortConfig, setSortConfig] = useState({ key: "r", direction: "desc" });
+  const [editingName, setEditingName] = useState(false);
+  const [nameError, setNameError] = useState("");
+  const [visibleNotif, setVisibleNotif] = useState(false);
 
-  // Initialize socket connection
   useEffect(() => {
     const newSocket = io(SOCKET_SERVER_URL);
     setSocket(newSocket);
 
-    newSocket.on('connect', () => console.log('Connected to backend'));
-    newSocket.on('leaderboard_updated', ({ leaderboard }) => setLeaderboard(leaderboard));
-
-    newSocket.on('match_found', ({ room }) => {
-      setIsOnline(true);
-      setRoomId(room);
-      setGameState('game');
-      console.log(`Match found in room ${room}`);
+    newSocket.on("connect", () => {
+      console.log("Connected to backend");
+      let storedName = localStorage.getItem("playerName");
+      if (!storedName) {
+        storedName = generateRandomName();
+        localStorage.setItem("playerName", storedName);
+      }
+      setName(storedName);
+      newSocket.emit("set_name", { name: storedName });
     });
 
-    newSocket.on('waiting', ({ room }) => {
+    newSocket.on("leaderboard_updated", ({ leaderboard }) => setLeaderboard(leaderboard));
+
+    newSocket.on("name_taken", ({ message }) => {
+      setNameError(message);
+    });
+
+    newSocket.on("name_set", ({ success, message }) => {
+      if (success) {
+        setEditingName(false);
+        setNameError("");
+        localStorage.setItem("playerName", name.trim() || generateRandomName());
+      } else {
+        setNameError(message);
+      }
+    });
+
+    newSocket.on("match_found", ({ room, opponent }) => {
       setRoomId(room);
-      setGameState('waiting');
+      setGameState("running");
+      console.log(`Match found in room ${room} against ${opponent}`);
+    });
+
+    newSocket.on("lobby", ({ room }) => {
+      setRoomId(room);
+      setGameState("lobby");
       console.log(`Waiting for an opponent in room ${room}`);
     });
 
-    newSocket.on('game_result', (data) => {
+    newSocket.on("game_result", (data) => {
       setPlayerChoice(data.your_move);
       setOpponentChoice(data.opponent_move);
       setResult(data.result);
-      setGameState('gameover');
-      setHasSubmittedScore(false);
+      setGameState("game_over");
+      submitScore();
     });
 
-    newSocket.on('opponent_left', resetGame);
-    newSocket.on('error', resetGame);
+    newSocket.on("opponent_left", resetGame);
+    newSocket.on("error", resetGame);
 
     return () => {
       newSocket.disconnect();
     };
   }, []);
 
-  // Fetch leaderboard on initial load
   useEffect(() => {
     fetchLeaderboard();
   }, []);
 
-  // Load name from localStorage on mount
   useEffect(() => {
-    const storedName = localStorage.getItem('playerName');
+    const storedName = localStorage.getItem("playerName");
     if (storedName) {
       setName(storedName);
     }
   }, []);
 
+  useEffect(() => setVisibleNotif(!!nameError), [nameError]);
+
+  const generateRandomName = () => {
+    const adjectives = ["Brave", "Clever", "Swift", "Mighty", "Bold"];
+    const animals = ["Tiger", "Falcon", "Wolf", "Eagle", "Lion"];
+    return `${adjectives[Math.floor(Math.random() * adjectives.length)]}-${animals[Math.floor(Math.random() * animals.length)]}-${Math.floor(Math.random() * 9000) + 1000}`;
+  };
+
   const fetchLeaderboard = () => {
-    fetch(`${SOCKET_SERVER_URL}/leaderboard`)
-      .then((res) => res.json())
+    fetch(`${SOCKET_SERVER_URL}/leaderboard`).then((res) => res.json())
       .then((data) => setLeaderboard(data))
-      .catch((err) => console.error('Error fetching leaderboard:', err));
+      .catch((err) => console.error("Error fetching leaderboard:", err));
   };
 
-  const startGame = () => setGameState('mode_selection');
-
-  const playAI = () => {
-    setIsOnline(false);
-    setGameState('game');
-  };
-
-  const playOnline = () => {
-    if (socket) {
-      socket.emit('find_match');
-    }
-  };
+  const startGame = (mode) => socket?.emit("find_match", { mode });
 
   const handleChoice = (choice) => {
     setPlayerChoice(choice);
-    if (isOnline && socket && roomId) {
-      socket.emit('make_move', { move: choice, room: roomId });
-    } else {
-      const aiChoices = ['Rock', 'Paper', 'Scissors'];
-      const aiMove = aiChoices[Math.floor(Math.random() * 3)];
-      const gameResult = determineResult(choice, aiMove);
-      setOpponentChoice(aiMove);
-      setResult(gameResult);
-      setGameState('gameover');
+    if (socket && roomId) {
+      socket.emit("make_move", { move: choice, room: roomId });
     }
   };
 
-  const determineResult = (player, opponent) => {
-    if (player === opponent) return 'Draw!';
-    const wins = { Rock: 'Scissors', Paper: 'Rock', Scissors: 'Paper' };
-    return wins[player] === opponent ? 'You Win!' : 'You Lose!';
+  const handleSort = (key) => {
+    let direction = "desc";
+    if (sortConfig.key === key && sortConfig.direction === "desc") {
+      direction = "asc";
+    }
+    setSortConfig({ key, direction });
   };
+
+  const sortedLeaderboard = useMemo(() => {
+    const sortableItems = [...leaderboard];
+    sortableItems.sort((a, b) => {
+      if (a[sortConfig.key] < b[sortConfig.key]) {
+        return sortConfig.direction === "asc" ? -1 : 1;
+      }
+      if (a[sortConfig.key] > b[sortConfig.key]) {
+        return sortConfig.direction === "asc" ? 1 : -1;
+      }
+      return 0;
+    });
+    return sortableItems;
+  }, [leaderboard, sortConfig]);
 
   const submitScore = () => {
-    const score = result === 'You Win!' ? 1 : result === 'You Lose!' ? -1 : 0;
-    const trimmedName = name.trim() || 'noname';
-
-    if (trimmedName !== 'noname') {
-      localStorage.setItem('playerName', trimmedName);
-    }
-
+    const score = result === "You Win!" ? 1 : result === "You Lose!" ? -1 : 0;
+    const trimmedName = name.trim() || generateRandomName();
+    localStorage.setItem("playerName", trimmedName);
     fetch(`${SOCKET_SERVER_URL}/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: trimmedName, score }),
-    })
-      .then((res) => res.json())
-      .then(() => setHasSubmittedScore(true))
-      .catch((err) => console.error('Error submitting score:', err));
+    }).then((res) => res.json())
+      .catch((err) => console.error("Error submitting score:", err));
   };
 
   const resetGame = () => {
     if (socket) {
-      socket.emit('cancel_find_match', { room: roomId, playerId: socket.id });
-      console.log('Cancelled match');
+      socket.emit("cancel_find_match", { room: roomId, playerId: socket.id });
+      console.log("Cancelled match");
     }
-    setGameState('menu');
-    setPlayerChoice(null);
-    setOpponentChoice(null);
-    setResult('');
-    setHasSubmittedScore(false);
-    setIsOnline(false);
+    setGameState("main_menu");
   };
 
-  const goToMainMenu = () => {
-    setGameState('menu');
-  };
-
-  const playAgain = () => {
-    if (isOnline && socket) {
-      socket.emit('find_match');
-      setGameState('waiting');
-    } else {
-      setGameState('game');
-      setPlayerChoice(null);
-      setOpponentChoice(null);
-      setResult('');
-    }
-  };
-
-  const handleNameChange = (e) => {
+  const updateNameInput = (e) => {
+    setNameError("");
     const newName = e.target.value;
-    if (/^[A-Za-z0-9]{0,20}$/.test(newName)) {
-      setName(newName);
+    setName(newName);
+  };
+
+  const handleEditOrSave = () => {
+    if (editingName) {
+      if (name.trim() === "") {
+        setNameError("Name cannot be empty");
+        return;
+      }
+      const trimmedName = name.trim();
+      socket.emit("set_name", { name: trimmedName });
+    } else {
+      setEditingName(true);
     }
+  };
+
+  const handleClose = () => {
+    setVisibleNotif(false);
+    setTimeout(() => setNameError(null), 1000);
   };
 
   return (
     <div className="app">
-      <div className="menu_container">
-        <div className="text_display" style={{ fontSize: '4vh' }}>{name || 'noname'}</div>
+      <div className="header_container">
+        <div className={editingName ? "" : "text_display"} style={editingName ? {} : { fontSize: "4vh" }}>
+          {editingName ? (<input className="text_input" type="text" value={name} onChange={updateNameInput} />) : (name || generateRandomName())}
+        </div>
+        <button className="button" onClick={handleEditOrSave} disabled={editingName && !!nameError}>
+          {editingName ? "Save" : "Edit"}
+        </button>
+        {nameError && <div className={`notif ${visibleNotif ? 'visible' : ''}`}>
+          <button className="close-btn" onClick = { handleClose }>✖</button>
+          {nameError}
+        </div>}
       </div>
 
       <div className="main_container">
-        {gameState === 'menu' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <button className="button" onClick={startGame}>Rock, Paper, Scissors</button>
-            {name && (
-              <button className="button" 
-                onClick={() => {localStorage.removeItem('playerName'); setName('');}}>
-                Reset Name
-              </button>
-            )}
+        {gameState === "main_menu" && (
+          <div className="button_container">
+            <button className="button" onClick={() => setGameState("menu")}>Rock, Paper, Scissors</button>
           </div>
         )}
 
-        {gameState === 'mode_selection' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {gameState === "menu" && (
+          <div>
             <div className="text_display">Select Mode</div>
-            <button className="button" onClick={playAI}>Versus AI</button>
-            <button className="button" onClick={playOnline}>Versus Player</button>
-            <button className="button" onClick={goToMainMenu}>Back</button>
+            <div className="button_container">
+              <button className="button" onClick={() => startGame("ai")}>Versus AI</button>
+              <button className="button" onClick={() => startGame("online")}>Versus Player</button>
+            </div>
+            <div className="button_container">
+              <button className="button" onClick={() => setGameState("main_menu")}>Back</button>
+            </div>
           </div>
         )}
 
-        {gameState === 'waiting' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {gameState === "lobby" && (
+          <div>
             <div className="text_display">Waiting for an opponent...</div>
-            <button className="button" onClick={resetGame}>Cancel</button>
+            <div className="button_container">
+              <button className="button" onClick={resetGame}>Cancel</button>
+            </div>
           </div>
         )}
 
-        {gameState === 'game' && (
+        {gameState === "running" && (
           <div>
             <div className="text_display">Choose Your Move</div>
-            <div className="choices" style={{ display: 'flex', justifyContent: 'center' }}>
-              <button className="button" onClick={() => handleChoice('Rock')}>Rock</button>
-              <button className="button" onClick={() => handleChoice('Paper')}>Paper</button>
-              <button className="button" onClick={() => handleChoice('Scissors')}>Scissors</button>
+            <div className="button_container">
+              <button className="button" onClick={() => handleChoice("Rock")}>Rock</button>
+              <button className="button" onClick={() => handleChoice("Paper")}>Paper</button>
+              <button className="button" onClick={() => handleChoice("Scissors")}>Scissors</button>
             </div>
           </div>
         )}
 
-        {gameState === 'gameover' && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        {gameState === "game_over" && (
+          <div className="table_header_container">
             <div className="text_display">{playerChoice}/{opponentChoice} = {result}</div>
-            <div style={{ display: 'flex', justifyContent: 'center', padding: '2vh' }}>
-              {!hasSubmittedScore && (
-                <div>
-                  <input className="text_input" type="text" placeholder="Enter your name"
-                    value={name} onChange={handleNameChange} />
-                  <button className="button" onClick={submitScore}>Submit</button>
-                </div>
-              )}
-              {hasSubmittedScore && <div className="text_display">Score submitted!</div>}
-            </div>
             <div className="text_display">Leaderboard</div>
-            <ul className="leaderboard">
-              {leaderboard.map((entry, index) => (
-                <li key={index}>{entry.score} | {entry.name}</li>
-              ))}
-            </ul>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '3vh' }}>
-              <button className="button" onClick={playAgain}>Play Again</button>
-              <button className="button" onClick={goToMainMenu}>Main Menu</button>
+            <div className="table_container">
+              <table className="leaderboard_table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th onClick={() => handleSort("r")}>R</th>
+                    <th onClick={() => handleSort("w")}>W</th>
+                    <th onClick={() => handleSort("d")}>D</th>
+                    <th onClick={() => handleSort("l")}>L</th>
+                    <th onClick={() => handleSort("n")}>Name</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedLeaderboard.map((entry, index) => (
+                    <tr key={index}>
+                      <td>{index+1}</td>
+                      <td>{entry.r.toFixed(0)}</td>
+                      <td>{entry.w}</td>
+                      <td>{entry.d}</td>
+                      <td>{entry.l}</td>
+                      <td>{entry.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="button_container" style={{ paddingBottom: "1.5vh" }}>
+              <button className="button" onClick={() => setGameState("main_menu")}>Main Menu</button>
             </div>
           </div>
         )}
