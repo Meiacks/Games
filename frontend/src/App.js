@@ -137,6 +137,10 @@ function App() {
     setIsOnline(false);
   };
 
+  const goToMainMenu = () => {
+    setGameState('menu');
+  };
+
   const playAgain = () => {
     if (isOnline && socket) {
       socket.emit('find_match');
@@ -180,7 +184,7 @@ function App() {
             <div className="text_display">Select Mode</div>
             <button className="button" onClick={playAI}>Versus AI</button>
             <button className="button" onClick={playOnline}>Versus Player</button>
-            <button className="button" onClick={resetGame}>Back</button>
+            <button className="button" onClick={goToMainMenu}>Back</button>
           </div>
         )}
 
@@ -223,7 +227,7 @@ function App() {
             </ul>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '3vh' }}>
               <button className="button" onClick={playAgain}>Play Again</button>
-              <button className="button" onClick={resetGame}>Main Menu</button>
+              <button className="button" onClick={goToMainMenu}>Main Menu</button>
             </div>
           </div>
         )}
