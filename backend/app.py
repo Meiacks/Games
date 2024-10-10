@@ -47,6 +47,15 @@ def sort_leaderboard(leaderboard):
     leaderboard = sorted(leaderboard.items(), key=lambda item: item[1], reverse=True)
     return [{"name": k, "score": v} for k, v in leaderboard]
 
+def determine_result(move1, move2):
+    rules = {"Rock": "Scissors", "Paper": "Rock", "Scissors": "Paper"}
+    if move1 == move2:
+        return ("Draw!", "Draw!")
+    elif rules.get(move1) == move2:
+        return ("You Win!", "You Lose!")
+    else:
+        return ("You Lose!", "You Win!")
+
 @app.route("/leaderboard", methods=["GET"])
 def get_leaderboard():
     leaderboard = sort_leaderboard(load_leaderboard())
@@ -88,7 +97,7 @@ def handle_find_match():
     rooms[room_id] = [request.sid]
     player_moves[room_id] = {}
     join_room(room_id)
-    emit("waiting", {"message": "Waiting for an opponent..."}, room=request.sid)
+    emit("waiting", {"room": room_id}, room=request.sid)
     logger.info(f"Created room {room_id} for player {request.sid}")
 
 @socketio.on("make_move")
@@ -115,6 +124,21 @@ def handle_make_move(data):
         emit("error", {"message": "Invalid room ID"}, room=request.sid)
         logger.warning(f"Invalid room {room_id} by {request.sid}")
 
+@socketio.on("cancel_find_match")
+def handle_cancel_find_match(data):
+    room_id = data.get('room')
+    player_id = data.get('playerId')
+
+    if room_id in rooms and player_id in rooms[room_id]:
+        rooms[room_id].remove(player_id)
+        leave_room(room_id)
+        logger.info(f"Player {player_id} left room {room_id}")
+        
+        if len(rooms[room_id]) == 0:
+            del rooms[room_id]
+            del player_moves[room_id]
+            logger.info(f"Deleted empty room {room_id}")
+
 @socketio.on("disconnect")
 def handle_disconnect():
     logger.info(f"Client disconnected: {request.sid}")
@@ -128,19 +152,10 @@ def handle_disconnect():
                 del player_moves[room_id]
                 logger.info(f"Deleted empty room {room_id}")
             else:
-                emit("opponent_left", {"message": "Opponent has left the game."}, room=room_id)
+                emit("opponent_left", room=room_id)
                 del player_moves[room_id]
                 logger.info(f"Room {room_id} has remaining players: {players}")
             break
-
-def determine_result(move1, move2):
-    rules = {"Rock": "Scissors", "Paper": "Rock", "Scissors": "Paper"}
-    if move1 == move2:
-        return ("Draw!", "Draw!")
-    elif rules.get(move1) == move2:
-        return ("You Win!", "You Lose!")
-    else:
-        return ("You Lose!", "You Win!")
 
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=5001, debug=app.config['DEBUG'])

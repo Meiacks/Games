@@ -21,13 +21,8 @@ function App() {
     const newSocket = io(SOCKET_SERVER_URL);
     setSocket(newSocket);
 
-    newSocket.on('connect', () => {
-      console.log('Connected to backend');
-    });
-
-    newSocket.on('leaderboard_updated', (data) => {
-      setLeaderboard(data.leaderboard);
-    });
+    newSocket.on('connect', () => console.log('Connected to backend'));
+    newSocket.on('leaderboard_updated', ({ leaderboard }) => setLeaderboard(leaderboard));
 
     newSocket.on('match_found', ({ room }) => {
       setIsOnline(true);
@@ -36,9 +31,10 @@ function App() {
       console.log(`Match found in room ${room}`);
     });
 
-    newSocket.on('waiting', () => {
+    newSocket.on('waiting', ({ room }) => {
+      setRoomId(room);
       setGameState('waiting');
-      console.log('Waiting for opponent...');
+      console.log(`Waiting for an opponent in room ${room}`);
     });
 
     newSocket.on('game_result', (data) => {
@@ -49,15 +45,8 @@ function App() {
       setHasSubmittedScore(false);
     });
 
-    newSocket.on('opponent_left', (data) => {
-      alert(data.message);
-      resetGame();
-    });
-
-    newSocket.on('error', (data) => {
-      alert(data.message);
-      resetGame();
-    });
+    newSocket.on('opponent_left', resetGame);
+    newSocket.on('error', resetGame);
 
     return () => {
       newSocket.disconnect();
@@ -136,6 +125,10 @@ function App() {
   };
 
   const resetGame = () => {
+    if (socket) {
+      socket.emit('cancel_find_match', { room: roomId, playerId: socket.id });
+      console.log('Cancelled match');
+    }
     setGameState('menu');
     setPlayerChoice(null);
     setOpponentChoice(null);
@@ -212,7 +205,6 @@ function App() {
         {gameState === 'gameover' && (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div className="text_display">{playerChoice}/{opponentChoice} = {result}</div>
-
             <div style={{ display: 'flex', justifyContent: 'center', padding: '2vh' }}>
               {!hasSubmittedScore && (
                 <div>
@@ -223,15 +215,12 @@ function App() {
               )}
               {hasSubmittedScore && <div className="text_display">Score submitted!</div>}
             </div>
-
             <div className="text_display">Leaderboard</div>
-
             <ul className="leaderboard">
               {leaderboard.map((entry, index) => (
                 <li key={index}>{entry.score} | {entry.name}</li>
               ))}
             </ul>
-
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '3vh' }}>
               <button className="button" onClick={playAgain}>Play Again</button>
               <button className="button" onClick={resetGame}>Main Menu</button>
