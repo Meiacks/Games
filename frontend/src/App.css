@@ -143,29 +143,31 @@ body {
 
 table {
   width: 100%;
-  border-spacing: 1px;
   background-color: #AAA;
+  border-spacing: 1px 0px;
+  font-size: 2vh;
 }
 
 th,
 td {
   background-color: #333;
   padding: 0.3vh 0.6vh 0.3vh 0.8vh;
-  font-size: 2vh;
 }
 
 th {
+  top: 0;
   text-align: center;
   background-color: #333;
   cursor: pointer;
+  position: sticky;
 }
 
 tr:nth-child(even) td {
-  background-color: #444;
+  background-color: #333;
 }
 
 tr:nth-child(odd) td {
-  background-color: #333;
+  background-color: #444;
 }
 
 .leaderboard_table {
@@ -178,4 +180,16 @@ tr:nth-child(odd) td {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 20vh;
+}
+
+/* ROOMS */
+
+.rooms_table th,
+.rooms_table td {
+  padding: 8px;
+  text-align: center;
+}
+
+.rooms_table th {
+  cursor: pointer;
 }

@@ -19,6 +19,7 @@ function App() {
   const [editingName, setEditingName] = useState(false);
   const [nameError, setNameError] = useState("");
   const [visibleNotif, setVisibleNotif] = useState(false);
+  const [rooms, setRooms] = useState([]);
 
   useEffect(() => {
     const newSocket = io(SOCKET_SERVER_URL);
@@ -53,13 +54,13 @@ function App() {
 
     newSocket.on("match_found", ({ room, opponent }) => {
       setRoomId(room);
-      setGameState("running");
+      changeGameState("running");
       console.log(`Match found in room ${room} against ${opponent}`);
     });
 
     newSocket.on("lobby", ({ room }) => {
       setRoomId(room);
-      setGameState("lobby");
+      changeGameState("lobby");
       console.log(`Waiting for an opponent in room ${room}`);
     });
 
@@ -67,7 +68,7 @@ function App() {
       setPlayerChoice(data.your_move);
       setOpponentChoice(data.opponent_move);
       setResult(data.result);
-      setGameState("game_over");
+      changeGameState("game_over");
       submitScore();
     });
 
@@ -91,6 +92,26 @@ function App() {
   }, []);
 
   useEffect(() => setVisibleNotif(!!nameError), [nameError]);
+
+  useEffect(() => {
+    if (gameState === "lobby") {
+      fetchRooms();
+      const interval = setInterval(fetchRooms, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [gameState]);
+
+  const fetchRooms = () => {
+    fetch(`${SOCKET_SERVER_URL}/rooms`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.rooms) {
+          const filteredRooms = data.rooms.filter(room => room.room_id !== roomId);
+          setRooms(filteredRooms);
+        }
+      })
+      .catch((err) => console.error("Error fetching rooms:", err));
+  };
 
   const generateRandomName = () => {
     const adjectives = ["Brave", "Clever", "Swift", "Mighty", "Bold"];
@@ -148,9 +169,10 @@ function App() {
   };
 
   const resetGame = () => {
-    if (socket) {
+    if (socket && roomId) {
       socket.emit("cancel_find_match", { room: roomId, playerId: socket.id });
-      console.log("Cancelled match");
+      console.log("Cancelled match and left room:", roomId);
+      setRoomId(null);
     }
     setGameState("main_menu");
   };
@@ -179,6 +201,20 @@ function App() {
     setTimeout(() => setNameError(null), 1000);
   };
 
+  const joinRoom = (roomId) => {
+    socket.emit("join_room", { room: roomId });
+    setRoomId(roomId);
+    changeGameState("running");
+    console.log(`Joined room ${roomId}`);
+  };
+
+  const changeGameState = (newState) => {
+    if (["lobby", "running"].includes(gameState) && newState !== gameState) {
+      resetGame();
+    }
+    setGameState(newState);
+  };
+
   return (
     <div className="app">
       <div className="header_container">
@@ -189,7 +225,7 @@ function App() {
           {editingName ? "Save" : "Edit"}
         </button>
         {nameError && <div className={`notif ${visibleNotif ? 'visible' : ''}`}>
-          <button className="close-btn" onClick = { handleClose }>✖</button>
+          <button className="close-btn" onClick={handleClose}>✖</button>
           {nameError}
         </div>}
       </div>
@@ -197,7 +233,7 @@ function App() {
       <div className="main_container">
         {gameState === "main_menu" && (
           <div className="button_container">
-            <button className="button" onClick={() => setGameState("menu")}>Rock, Paper, Scissors</button>
+            <button className="button" onClick={() => changeGameState("menu")}>Rock, Paper, Scissors</button>
           </div>
         )}
 
@@ -209,16 +245,44 @@ function App() {
               <button className="button" onClick={() => startGame("online")}>Versus Player</button>
             </div>
             <div className="button_container">
-              <button className="button" onClick={() => setGameState("main_menu")}>Back</button>
+              <button className="button" onClick={() => changeGameState("main_menu")}>Back</button>
             </div>
           </div>
         )}
 
         {gameState === "lobby" && (
-          <div>
-            <div className="text_display">Waiting for an opponent...</div>
-            <div className="button_container">
-              <button className="button" onClick={resetGame}>Cancel</button>
+          <div className="table_menu_container">
+            <div className="text_display">Available Rooms</div>
+            <div className="table_container">
+              <table className="rooms_table">
+                <thead>
+                  <tr>
+                    <th>Room ID</th>
+                    <th>Status</th>
+                    <th>Players</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rooms.length > 0 ? (
+                    rooms.map((room) => (
+                      <tr key={room.room_id}>
+                        <td>{room.room_id}</td>
+                        <td>{room.status}</td>
+                        <td>{room.num_players}</td>
+                        <td>
+                          <button className="button" onClick={() => joinRoom(room.room_id)} disabled={room.status !== "waiting"}>
+                            Join
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (<tr><td colSpan="4">No available rooms.</td></tr>)}
+                </tbody>
+              </table>
+            </div>
+            <div className="button_container" style={{ paddingBottom: "3vh" }}>
+              <button className="button" onClick={resetGame}>Back</button>
             </div>
           </div>
         )}
@@ -235,7 +299,7 @@ function App() {
         )}
 
         {gameState === "game_over" && (
-          <div className="table_header_container">
+          <div className="table_menu_container">
             <div className="text_display">{playerChoice}/{opponentChoice} = {result}</div>
             <div className="text_display">Leaderboard</div>
             <div className="table_container">
@@ -253,7 +317,7 @@ function App() {
                 <tbody>
                   {sortedLeaderboard.map((entry, index) => (
                     <tr key={index}>
-                      <td>{index+1}</td>
+                      <td>{index + 1}</td>
                       <td>{entry.r.toFixed(0)}</td>
                       <td>{entry.w}</td>
                       <td>{entry.d}</td>
@@ -265,7 +329,7 @@ function App() {
               </table>
             </div>
             <div className="button_container" style={{ paddingBottom: "1.5vh" }}>
-              <button className="button" onClick={() => setGameState("main_menu")}>Main Menu</button>
+              <button className="button" onClick={() => changeGameState("main_menu")}>Main Menu</button>
             </div>
           </div>
         )}

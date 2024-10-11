@@ -78,6 +78,22 @@ def generate_random_name():
     animals = ["Tiger", "Falcon", "Wolf", "Eagle", "Lion"]
     return f"{random.choice(adjectives)}-{random.choice(animals)}-{random.randint(1000, 9999)}"
 
+@app.route("/rooms", methods=["GET"])
+def get_rooms():
+    with file_lock:
+        try:
+            current_rooms = []
+            for room_id, room_info in rooms.items():
+                current_rooms.append({
+                    "room_id": room_id,
+                    "status": room_info["status"],
+                    "num_players": len(room_info["players"])
+                })
+            return jsonify({"rooms": current_rooms}), 200
+        except Exception as e:
+            log.error(f"Unable to retrieve rooms: {e}")
+            return jsonify({"error": "Unable to retrieve rooms"}), 500
+
 @app.route("/leaderboard", methods=["GET"])
 def get_leaderboard():
     leaderboard = sort_leaderboard(load_leaderboard())
@@ -112,6 +128,26 @@ def handle_set_name(data):
     name_to_sid[name] = request.sid
     log.info(f"User {request.sid} set name to {name}")
     socketio.emit("name_set", {"success": True, "message": "Name set successfully"}, room=request.sid)
+
+@socketio.on("join_room")
+def handle_join_room(data):
+    room_id = data.get("room")
+    name = sid_to_name.get(request.sid, f"Player-{request.sid}")
+    if room_id in rooms:
+        room = rooms[room_id]
+        if room["status"] == "waiting":
+            room["players"].append(name)
+            room["status"] = "running"
+            room["step"][name] = None
+            join_room(room_id)
+            socketio.emit("match_found", {"room": room_id}, room=room_id)
+            log.info(f"Player {name} joined room {room_id}. Room is now running.")
+        else:
+            socketio.emit("error", {"message": "Room is not available"}, room=request.sid)
+            log.warning(f"Player {name} attempted to join room {room_id}, but it is not available.")
+    else:
+        socketio.emit("error", {"message": "Room does not exist"}, room=request.sid)
+        log.warning(f"Player {name} attempted to join non-existent room {room_id}.")
 
 @socketio.on("find_match")
 def handle_find_match(data):
@@ -245,9 +281,21 @@ def handle_cancel_find_match(data):
             room["players"].remove(player_id)
             leave_room(room_id)
             log.info(f"Player {player_id} left room {room_id}")
+
             if not room["players"]:
                 del rooms[room_id]
                 log.info(f"Deleted empty room {room_id}")
+            else:
+                remaining_player_id = room["players"][0]
+                def delayed_remove(room_id, remaining_player_id):
+                    eventlet.sleep(5)
+                    if room_id in rooms:
+                        del rooms[room_id]
+                        log.info(f"Deleted room {room_id} after opponent left.")
+                        socketio.emit("opponent_left", room=remaining_player_id, to=remaining_player_id)
+                        socketio.emit("return_to_menu", room=remaining_player_id, to=remaining_player_id)
+                socketio.start_background_task(delayed_remove, room_id, remaining_player_id)
+                log.info(f"Room {room_id} will be deleted in 5 seconds")
         else:
             log.warning(f"Player {player_id} tried to leave room {room_id}, but is not a participant.")
     else:
