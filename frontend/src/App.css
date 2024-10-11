@@ -128,11 +128,12 @@ body {
 .table_menu_container {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   height: 100%;
 }
 
 .table_container {
-  flex: 1 1;
+  /* flex: 1 1; */
   overflow-y: auto;
   overflow-x: hidden;
   margin: 1vh;
