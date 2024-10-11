@@ -42,26 +42,21 @@ function App() {
       setNameError(message);
     });
 
-    newSocket.on("name_set", ({ success, message }) => {
-      if (success) {
-        setEditingName(false);
-        setNameError("");
-        localStorage.setItem("playerName", name.trim() || generateRandomName());
-      } else {
-        setNameError(message);
-      }
+    newSocket.on("name_set", () => {
+      setEditingName(false);
+      localStorage.setItem("playerName", name.trim());
     });
 
-    newSocket.on("match_found", ({ room, opponent }) => {
+    newSocket.on("match_found", ({ room }) => {
       setRoomId(room);
       changeGameState("running");
-      console.log(`Match found in room ${room} against ${opponent}`);
+      console.log(`Match found in room ${room}`);
     });
 
     newSocket.on("lobby", ({ room }) => {
       setRoomId(room);
       changeGameState("lobby");
-      console.log(`Waiting for an opponent in room ${room}`);
+      console.log(`New room created ${room}`);
     });
 
     newSocket.on("game_result", (data) => {
@@ -72,16 +67,17 @@ function App() {
       submitScore();
     });
 
-    newSocket.on("opponent_left", resetGame);
-    newSocket.on("error", resetGame);
+    newSocket.on("rooms_updated", ({ rooms }) => {
+      setRooms(rooms);
+      console.log("Rooms updated:", rooms);
+    });
+
+    newSocket.on("opponent_left", quitGame);
+    newSocket.on("error", quitGame);
 
     return () => {
       newSocket.disconnect();
     };
-  }, []);
-
-  useEffect(() => {
-    fetchLeaderboard();
   }, []);
 
   useEffect(() => {
@@ -93,44 +89,18 @@ function App() {
 
   useEffect(() => setVisibleNotif(!!nameError), [nameError]);
 
-  useEffect(() => {
-    if (gameState === "lobby") {
-      fetchRooms();
-      const interval = setInterval(fetchRooms, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [gameState]);
-
-  const fetchRooms = () => {
-    fetch(`${SOCKET_SERVER_URL}/rooms`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.rooms) {
-          const filteredRooms = data.rooms.filter(room => room.room_id !== roomId);
-          setRooms(filteredRooms);
-        }
-      })
-      .catch((err) => console.error("Error fetching rooms:", err));
-  };
-
   const generateRandomName = () => {
     const adjectives = ["Brave", "Clever", "Swift", "Mighty", "Bold"];
     const animals = ["Tiger", "Falcon", "Wolf", "Eagle", "Lion"];
     return `${adjectives[Math.floor(Math.random() * adjectives.length)]}-${animals[Math.floor(Math.random() * animals.length)]}-${Math.floor(Math.random() * 9000) + 1000}`;
   };
 
-  const fetchLeaderboard = () => {
-    fetch(`${SOCKET_SERVER_URL}/leaderboard`).then((res) => res.json())
-      .then((data) => setLeaderboard(data))
-      .catch((err) => console.error("Error fetching leaderboard:", err));
-  };
-
-  const startGame = (mode) => socket?.emit("find_match", { mode });
+  const startGame = (mode) => socket?.emit("create_room", { mode });
 
   const handleChoice = (choice) => {
     setPlayerChoice(choice);
     if (socket && roomId) {
-      socket.emit("make_move", { move: choice, room: roomId });
+      socket.emit("make_move", { room: roomId, move: choice });
     }
   };
 
@@ -158,7 +128,7 @@ function App() {
 
   const submitScore = () => {
     const score = result === "You Win!" ? 1 : result === "You Lose!" ? -1 : 0;
-    const trimmedName = name.trim() || generateRandomName();
+    const trimmedName = name.trim();
     localStorage.setItem("playerName", trimmedName);
     fetch(`${SOCKET_SERVER_URL}/submit`, {
       method: "POST",
@@ -168,10 +138,10 @@ function App() {
       .catch((err) => console.error("Error submitting score:", err));
   };
 
-  const resetGame = () => {
+  const quitGame = () => {
     if (socket && roomId) {
-      socket.emit("cancel_find_match", { room: roomId, playerId: socket.id });
-      console.log("Cancelled match and left room:", roomId);
+      socket.emit("quit_game", { room: roomId });
+      console.log(`Player ${socket.id} left room ${roomId}`);
       setRoomId(null);
     }
     setGameState("main_menu");
@@ -209,8 +179,10 @@ function App() {
   };
 
   const changeGameState = (newState) => {
-    if (["lobby", "running"].includes(gameState) && newState !== gameState) {
-      resetGame();
+    if (["lobby", "running"].includes(gameState) && !["lobby", "running"].includes(newState)) {
+      quitGame();
+    } else if (!["lobby", "running"].includes(gameState) && newState === "lobby") {
+      console.log("Entering lobby or running state.");
     }
     setGameState(newState);
   };
@@ -219,121 +191,143 @@ function App() {
     <div className="app">
       <div className="header_container">
         <div className={editingName ? "" : "text_display"} style={editingName ? {} : { fontSize: "4vh" }}>
-          {editingName ? (<input className="text_input" type="text" value={name} onChange={updateNameInput} />) : (name || generateRandomName())}
+          {editingName ? (<input className="text_input" type="text" value={name} onChange={updateNameInput} />) : (name)}
         </div>
         <button className="button" onClick={handleEditOrSave} disabled={editingName && !!nameError}>
           {editingName ? "Save" : "Edit"}
         </button>
-        {nameError && <div className={`notif ${visibleNotif ? 'visible' : ''}`}>
-          <button className="close-btn" onClick={handleClose}>✖</button>
-          {nameError}
-        </div>}
       </div>
 
-      <div className="main_container">
-        {gameState === "main_menu" && (
-          <div className="button_container">
-            <button className="button" onClick={() => changeGameState("menu")}>Rock, Paper, Scissors</button>
-          </div>
-        )}
-
-        {gameState === "menu" && (
-          <div>
-            <div className="text_display">Select Mode</div>
+      {nameError ? (<div className="text_display">{nameError}</div>) : (
+        <div className="main_container">
+          {gameState === "main_menu" && (
             <div className="button_container">
-              <button className="button" onClick={() => startGame("ai")}>Versus AI</button>
-              <button className="button" onClick={() => startGame("online")}>Versus Player</button>
+              <button className="button" onClick={() => changeGameState("menu")}>Rock, Paper, Scissors</button>
             </div>
-            <div className="button_container">
-              <button className="button" onClick={() => changeGameState("main_menu")}>Back</button>
-            </div>
-          </div>
-        )}
+          )}
 
-        {gameState === "lobby" && (
-          <div className="table_menu_container">
-            <div className="text_display">Available Rooms</div>
-            <div className="table_container">
-              <table className="rooms_table">
-                <thead>
-                  <tr>
-                    <th>Room ID</th>
-                    <th>Status</th>
-                    <th>Players</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rooms.length > 0 ? (
-                    rooms.map((room) => (
-                      <tr key={room.room_id}>
-                        <td>{room.room_id}</td>
-                        <td>{room.status}</td>
-                        <td>{room.num_players}</td>
-                        <td>
-                          <button className="button" onClick={() => joinRoom(room.room_id)} disabled={room.status !== "waiting"}>
-                            Join
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (<tr><td colSpan="4">No available rooms.</td></tr>)}
-                </tbody>
-              </table>
+          {gameState === "menu" && (
+            <div>
+              <div className="text_display">Select Mode</div>
+              <div className="button_container">
+                <button className="button" onClick={() => startGame("ai")}>Versus AI</button>
+                <button className="button" onClick={() => startGame("online")}>Versus Player</button>
+              </div>
+              <div className="button_container">
+                <button className="button" onClick={() => changeGameState("main_menu")}>Back</button>
+              </div>
             </div>
-            <div className="button_container" style={{ paddingBottom: "3vh" }}>
-              <button className="button" onClick={resetGame}>Back</button>
-            </div>
-          </div>
-        )}
+          )}
 
-        {gameState === "running" && (
-          <div>
-            <div className="text_display">Choose Your Move</div>
-            <div className="button_container">
-              <button className="button" onClick={() => handleChoice("Rock")}>Rock</button>
-              <button className="button" onClick={() => handleChoice("Paper")}>Paper</button>
-              <button className="button" onClick={() => handleChoice("Scissors")}>Scissors</button>
-            </div>
-          </div>
-        )}
-
-        {gameState === "game_over" && (
-          <div className="table_menu_container">
-            <div className="text_display">{playerChoice}/{opponentChoice} = {result}</div>
-            <div className="text_display">Leaderboard</div>
-            <div className="table_container">
-              <table className="leaderboard_table">
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th onClick={() => handleSort("r")}>R</th>
-                    <th onClick={() => handleSort("w")}>W</th>
-                    <th onClick={() => handleSort("d")}>D</th>
-                    <th onClick={() => handleSort("l")}>L</th>
-                    <th onClick={() => handleSort("n")}>Name</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedLeaderboard.map((entry, index) => (
-                    <tr key={index}>
-                      <td>{index + 1}</td>
-                      <td>{entry.r.toFixed(0)}</td>
-                      <td>{entry.w}</td>
-                      <td>{entry.d}</td>
-                      <td>{entry.l}</td>
-                      <td>{entry.n}</td>
+          {gameState === "lobby" && (
+            <div className="table_menu_container">
+              <div className="text_display">Available Rooms</div>
+              <div className="table_container">
+                <table className="rooms_table">
+                  <thead>
+                    <tr>
+                      <th>Room</th>
+                      <th>S</th>
+                      <th>nb</th>
+                      <th>Players</th>
+                      <th></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {rooms.filter(room => {
+                      return room.players && !room.players.includes(name);
+                    }).length > 0 ? (
+                          rooms.filter(room => room.players && !room.players.includes(name)).map((room) => (
+                        <tr key={room.room_id}>
+                          <td>{room.room_id.substring(0, 3)}...</td>
+                          <td>{room.status === "waiting" ? "🟢" : "🔴"}</td>
+                          <td>{room.num_players}/2</td>
+                          <td>
+                            <ul className="player_list">
+                              {room.players.map((player, index) => (
+                                <li key={index}>{player}</li>
+                              ))}
+                            </ul>
+                          </td>
+                          <td>
+                            <button className="button" onClick={() => joinRoom(room.room_id)} disabled={room.status !== "waiting"}>
+                              Join
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (<tr><td colSpan="5">No available rooms.</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+              <div className="button_container" style={{ paddingBottom: "3vh" }}>
+                <button className="button" onClick={quitGame}>Back</button>
+              </div>
             </div>
-            <div className="button_container" style={{ paddingBottom: "1.5vh" }}>
-              <button className="button" onClick={() => changeGameState("main_menu")}>Main Menu</button>
+          )}
+
+          {gameState === "running" && (
+            <div>
+              <div className="text_display">Choose Your Move</div>
+              <div className="button_container">
+                <button className="button" onClick={() => handleChoice("Rock")}>Rock</button>
+                <button className="button" onClick={() => handleChoice("Paper")}>Paper</button>
+                <button className="button" onClick={() => handleChoice("Scissors")}>Scissors</button>
+              </div>
             </div>
+          )}
+
+          {gameState === "game_over" && (
+            <div className="table_menu_container">
+              <div className="text_display">{playerChoice}/{opponentChoice} = {result}</div>
+              <div className="text_display">Leaderboard</div>
+              <div className="table_container">
+                <table className="leaderboard_table">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th onClick={() => handleSort("r")}>R</th>
+                      <th onClick={() => handleSort("w")}>W</th>
+                      <th onClick={() => handleSort("d")}>D</th>
+                      <th onClick={() => handleSort("l")}>L</th>
+                      <th onClick={() => handleSort("n")}>Name</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedLeaderboard.map((entry, index) => (
+                      <tr key={index}>
+                        <td>{index + 1}</td>
+                        <td>{entry.r.toFixed(0)}</td>
+                        <td>{entry.w}</td>
+                        <td>{entry.d}</td>
+                        <td>{entry.l}</td>
+                        <td>{entry.n}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="button_container" style={{ paddingBottom: "3vh" }}>
+                <button className="button" onClick={() => changeGameState("main_menu")}>Main Menu</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {gameState === "lobby" && roomId && (
+        <div className="footer_container">
+          <div className="button_container">
+            <button className="button" onClick={quitGame}>Quit</button>
+            <ul className="player_list">
+              {rooms.find(room => room.room_id === roomId)?.players.map((player, index) => (
+                <li key={index}>{player}</li>
+              ))}
+            </ul>
+            <button className="button">Ready</button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

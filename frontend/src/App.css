@@ -194,3 +194,14 @@ tr:nth-child(odd) td {
 .rooms_table th {
   cursor: pointer;
 }
+
+.player_list {
+  background-color: transparent;
+  margin: 0;
+  padding-left: 2.4vh;
+}
+
+.player_list li {
+  background-color: transparent;
+  text-align: left;
+}
