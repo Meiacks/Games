@@ -8,20 +8,25 @@ const SOCKET_SERVER_URL = "http://57.129.44.194:5001";
 
 function App() {
   const [gameState, setGameState] = useState("main");
-  const [playerChoice, setPlayerChoice] = useState(null);
-  const [opponentChoice, setOpponentChoice] = useState(null);
-  const [result, setResult] = useState("");
-  const [leaderboard, setLeaderboard] = useState([]);
   const [name, setName] = useState("");
+  const [result, setResult] = useState("");
+  const [nameError, setNameError] = useState("");
+
+  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "room_id", direction: "asc" });
+  const [leaderboardSortConfig, setLeaderboardSortConfig] = useState({ key: "r", direction: "desc" });
+
+  const [editingName, setEditingName] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+
   const [socket, setSocket] = useState(null);
   const [roomId, setRoomId] = useState(null);
-  const [leaderboardSortConfig, setLeaderboardSortConfig] = useState({ key: "r", direction: "desc" });
-  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "room_id", direction: "asc" });
-  const [editingName, setEditingName] = useState(false);
-  const [nameError, setNameError] = useState("");
-  const [visibleNotif, setVisibleNotif] = useState(false);
+  const [selectedChoice, setSelectedChoice] = useState(null);
+
   const [rooms, setRooms] = useState([]);
-  const [isPlayerReady, setIsPlayerReady] = useState(false);
+  const [rounds, setRounds] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [players, setPlayers] = useState([]); 
+
 
   useEffect(() => {
     const newSocket = io(SOCKET_SERVER_URL);
@@ -50,32 +55,34 @@ function App() {
 
     newSocket.on("leaderboard_updated", ({ leaderboard }) => setLeaderboard(leaderboard));
 
-    newSocket.on("match_found", ({ room }) => {
-      setRoomId(room);
+    newSocket.on("game_start", ({ room_id, players }) => {
+      setPlayers(players);
+      setRoomId(room_id);
       changeGameState("running");
-      console.log(`Match found in room ${room}`);
+      console.log(`Game started in room ${room_id}`);
     });
 
-    newSocket.on("game_start", ({ room }) => {
-      changeGameState("running");
-      console.log(`Game started in room ${room}`);
-    });
-
-    newSocket.on("lobby", ({ room }) => {
-      setRoomId(room);
+    newSocket.on("lobby", ({ room_id }) => {
+      setRoomId(room_id);
       changeGameState("lobby");
-      console.log(`New room created ${room}`);
+      console.log(`New room created ${room_id}`);
     });
 
     newSocket.on("game_result", (data) => {
-      setPlayerChoice(data.your_move);
-      setOpponentChoice(data.opponent_move);
-      setResult(data.result);
-      changeGameState("game_over");
-      submitScore();
+      const { winner, game_over, moves } = data;
+      const newRound = {winner: winner, move1: moves[0], move2: moves[1]};
+      setRounds(prevRounds => [...prevRounds, newRound]);
+      if (game_over) {
+        console.log(`Game over in room ${roomId}`);
+        changeGameState("game_over");
+        submitScore();
+      } else {
+        console.log(`Round result in room ${roomId}: ${result}`);
+        setResult(result);
+        setSelectedChoice(null);
+      }
     });
 
-    // Inside your rooms_updated handler
     newSocket.on("rooms_updated", ({ rooms }) => {
       // Transform rooms to include player info as dictionary
       const transformedRooms = rooms.map(room => ({
@@ -133,21 +140,26 @@ function App() {
     }
   }, []);
 
-  useEffect(() => setVisibleNotif(!!nameError), [nameError]);
-
   const generateRandomName = () => {
     const adjectives = ["Brave", "Clever", "Swift", "Mighty", "Bold"];
     const animals = ["Tiger", "Falcon", "Wolf", "Eagle", "Lion"];
     return `${adjectives[Math.floor(Math.random() * adjectives.length)]}-${animals[Math.floor(Math.random() * animals.length)]}-${Math.floor(Math.random() * 9000) + 1000}`;
   };
 
-  const startGame = (mode) => socket?.emit("create_room", { mode });
+  const startGame = (mode) => {
+    setRounds([]); // Clear previous rounds
+    socket?.emit("create_room", { mode });
+  };
 
   const handleChoice = (choice) => {
-    setPlayerChoice(choice);
-    setIsPlayerReady(true);
+    setSelectedChoice(choice);
+    setIsReady(true);
+    console.log(`Player ${name} selected ${choice}`);
     socket.emit("player_ready", { room: roomId, status: "ready" });
+    console.log(`socket: ${socket}, roomId: ${roomId}`);
+
     if (socket && roomId) {
+      console.log(`Player ${name} made a move: ${choice}`);
       socket.emit("make_move", { room: roomId, move: choice });
     }
   };
@@ -206,6 +218,11 @@ function App() {
       body: JSON.stringify({ name: trimmedName, score }),
     })
       .then((res) => res.json())
+      .then((data) => {
+        if (data.message) {
+          console.log(data.message);
+        }
+      })
       .catch((err) => console.error("Error submitting score:", err));
   };
 
@@ -215,8 +232,10 @@ function App() {
       console.log(`Player ${socket.id} left room ${roomId}`);
       setRoomId(null);
     }
-    setIsPlayerReady(false);
+    setIsReady(false);
     setGameState("main");
+    setRounds([]); // Clear rounds on quit
+    setSelectedChoice(null); // Reset the selected choice on quit
   };
 
   const updateNameInput = (e) => {
@@ -236,11 +255,6 @@ function App() {
     } else {
       setEditingName(true);
     }
-  };
-
-  const handleClose = () => {
-    setVisibleNotif(false);
-    setTimeout(() => setNameError(null), 1000);
   };
 
   const joinRoom = (roomId) => {
@@ -264,9 +278,10 @@ function App() {
   };
 
   const handleReady = () => {
+    console.log(`Socket: ${socket}, roomId: ${roomId}`);
     if (socket && roomId) {
-      const newStatus = !isPlayerReady;
-      setIsPlayerReady(newStatus);
+      const newStatus = !isReady;
+      setIsReady(newStatus);
       socket.emit("player_ready", { room: roomId, status: newStatus ? "ready" : "waiting" });
       console.log(`Player ${name} is ${newStatus ? "ready" : "waiting"} in room ${roomId}`);
     }
@@ -393,16 +408,67 @@ function App() {
             <div>
               <div className="text_display">Choose Your Move</div>
               <div className="button_container">
-                <button className="button" onClick={() => handleChoice("Rock")}>Rock</button>
-                <button className="button" onClick={() => handleChoice("Paper")}>Paper</button>
-                <button className="button" onClick={() => handleChoice("Scissors")}>Scissors</button>
+                <button
+                  className={selectedChoice === "Rock" ? "highlighted_button" : "button"}
+                  onClick={() => handleChoice("Rock")}>Rock</button>
+                <button
+                  className={selectedChoice === "Paper" ? "highlighted_button" : "button"}
+                  onClick={() => handleChoice("Paper")}>Paper</button>
+                <button
+                  className={selectedChoice === "Scissors" ? "highlighted_button" : "button"}
+                  onClick={() => handleChoice("Scissors")}>Scissors</button>
+              </div>
+              <div className="text_display">Game History</div>
+              <div className="table_container">
+                <table className="rounds_table">
+                  <thead>
+                    <tr>
+                      <th>R</th>
+                      <th>{players[0]}</th>
+                      <th>{players[1]}</th>
+                      <th>Winner</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rounds.map((round, index) => (
+                      <tr key={index}>
+                        <td>{index + 1}</td>
+                        <td>{round.move1}</td>
+                        <td>{round.move2}</td>
+                        <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
 
           {gameState === "game_over" && (
             <div className="table_menu_container">
-              <div className="text_display">{playerChoice}/{opponentChoice} = {result}</div>
+              <div className="text_display">Final Results</div>
+              <div className="table_container">
+                <table className="rounds_table">
+                  <thead>
+                    <tr>
+                      <th>R</th>
+                      <th>{players[0]}</th>
+                      <th>{players[1]}</th>
+                      <th>Winner</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rounds.map((round, index) => (
+                      <tr key={index}>
+                        <td>{index + 1}</td>
+                        <td>{round.move1}</td>
+                        <td>{round.move2}</td>
+                        <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               <div className="text_display">Leaderboard</div>
               <div className="table_container">
                 <table className="leaderboard_table">
@@ -443,7 +509,7 @@ function App() {
         </div>
       )}
 
-      {gameState === "lobby" && roomId && (
+      {gameState === "lobby" && (
         <div className="footer_container">
           <div className="button_container">
             <button className="button" onClick={quitGame}>Quit</button>
@@ -454,7 +520,7 @@ function App() {
                 </li>
               ))}
             </ul>
-            <button className="button" onClick={handleReady}>{isPlayerReady ? "Wait" : "Ready"}</button>
+            <button className="button" onClick={handleReady}>{isReady ? "Wait" : "Ready"}</button>
           </div>
         </div>
       )}
@@ -466,7 +532,7 @@ function App() {
             <ul className="player_list">
               {rooms.find(room => room.room_id === roomId)?.players && Object.entries(rooms.find(room => room.room_id === roomId).players).map(([player, info], index) => (
                 <li key={index}>
-                  {info.status === "ready" ? "🟢" : "🔴"} {player}
+                  {info.played ? "🟢" : "🔴"} {player}
                 </li>
               ))}
             </ul>

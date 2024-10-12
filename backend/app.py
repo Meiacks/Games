@@ -146,31 +146,36 @@ def handle_create_room(data):
     sid = request.sid
     name = sid_name.get(sid)
     clean_rooms_from_player(name)
+    wins2win = 2
     if mode == "ai":
         room_id = str(uuid.uuid4())
         rooms[room_id] = {
             "status": "running",
+            "wins2win": wins2win,
             "players": {
-                name: {"status": "waiting", "team": 1},
-                "AI": {"status": "waiting", "team": 2}
+                name: {"status": "ready", "team": 1, "played": False, "w": 0, "d": 0, "l": 0},
+                "AI": {"status": "ready", "team": 2, "played": False, "w": 0, "d": 0, "l": 0},
             },
-            "step": {name: None, "AI": None, "winner": None}
+            "rounds": [{"round": 1, name: None, "AI": None, "winner": None}]
         }
         join_room(room_id)
-        socketio.emit("match_found", {"room": room_id}, room=sid)
+        rooms[room_id]["players"] = dict(sorted(rooms[room_id]["players"].items()))
+        players = list(rooms[room_id]["players"].keys())
+        socketio.emit("game_start", {"room_id": room_id, "players": players}, room=sid)
         log.info(f"Player {name} created new room {room_id}")
         log.info(f"AI joined room {room_id}. Room is now running.")
     else:
         room_id = str(uuid.uuid4())
         rooms[room_id] = {
             "status": "waiting",
+            "wins2win": wins2win,
             "players": {
-                name: {"status": "waiting", "team": 1}
+                name: {"status": "waiting", "team": 1, "played": False, "w": 0, "d": 0, "l": 0},
             },
-            "step": {name: None, "winner": None}
+            "rounds": [{"round": 1, name: None, "winner": None}]
         }
         join_room(room_id)
-        socketio.emit("lobby", {"room": room_id}, room=sid)
+        socketio.emit("lobby", {"room_id": room_id}, room=sid)
         log.info(f"Player {name} created new room {room_id}")
     emit_rooms_update()
 
@@ -184,7 +189,7 @@ def handle_join_room(data):
         room = rooms[room_id]
         if room["status"] == "waiting" and len(room["players"]) < 2:
             team_number = 2 if 1 in [player["team"] for player in room["players"].values()] else 1
-            room["players"][name] = {"status": "waiting", "team": team_number}
+            room["players"][name] = {"status": "waiting", "team": team_number, "played": False, "w": 0, "d": 0, "l": 0}
             room["status"] = "waiting"  # Remain waiting until both players are ready
             join_room(room_id)
             log.info(f"Player {name} joined room {room_id}. Waiting for both players to be ready.")
@@ -209,12 +214,12 @@ def handle_player_ready(data):
 
         all_ready = all(player["status"] == "ready" for player in rooms[room_id]["players"].values())
         if all_ready and len(rooms[room_id]["players"]) == 2:
-            for player in rooms[room_id]["players"].values():
-                player["status"] = "waiting"
             rooms[room_id]["status"] = "running"
-            socketio.emit("game_start", {"room": room_id}, room=room_id)
+            rooms[room_id]["players"] = dict(sorted(rooms[room_id]["players"].items()))
+            players = list(rooms[room_id]["players"].keys())
+            socketio.emit("game_start", {"room_id": room_id, "players": players}, room=room_id)
             log.info(f"Game started in room {room_id}.")
-        
+
         emit_rooms_update()
     else:
         socketio.emit("error", {"message": "Invalid room or player"}, room=sid)
@@ -228,39 +233,74 @@ def handle_make_move(data):
     name = sid_name.get(sid)
     log.info(f"Player {name} in room {room_id} made move: {move}")
 
-    if room_id in rooms:
-        room = rooms[room_id]
-        if room["status"] == "running" and name in room["players"]:
-            room["step"][name] = move
+    if room_id not in rooms:
+        socketio.emit("error", {"message": "Invalid room ID"}, room=sid)
+        log.warning(f"Invalid room {room_id} by {name}")
+        emit_rooms_update()
+        return
 
-            if "AI" in room["players"] and room["step"]["AI"] is None:
-                ai_move = random.choice(["Rock", "Paper", "Scissors"])
-                room["step"]["AI"] = ai_move
-                log.info(f"AI move in room {room_id}: {ai_move}")
+    room = rooms[room_id]
 
-            if None not in [v for k, v in room["step"].items() if k != "winner"]:
-                log.info(f"Game over in room {room_id}. Calculating results.")
-                p1, p2 = list(room["players"].keys())
-                move1 = room["step"][p1]
-                move2 = room["step"][p2]
-                result1, result2 = determine_result(move1, move2)
-                room["step"]["winner"] = p1 if result1 == "Win!" else p2 if result2 == "Win!" else "Draw"
+    if room["status"] != "running" or name not in room["players"]:
+        socketio.emit("error", {"message": "You are not in this room or game hasn't started"}, room=sid)
+        log.warning(f"Player {name} tried to make a move in room {room_id}, but is not a participant or game not started.")
+        emit_rooms_update()
+        return
 
+    room["rounds"][-1][name] = move
+    room["players"][name]["played"] = True
+
+    # If playing against AI and AI hasn't made a move yet, generate AI's move
+    if "AI" in room["players"] and room["rounds"][-1]["AI"] is None:
+        ai_move = random.choice(["Rock", "Paper", "Scissors"])
+        room["rounds"][-1]["AI"] = ai_move
+        room["players"]["AI"]["played"] = True
+        log.info(f"AI move in room {room_id}: {ai_move}")
+
+    if all(v["played"] for v in room["players"].values()):
+        for player in room["players"]:
+            room["players"][player]["played"] = False
+        p1, p2 = sorted(room["players"].keys())
+        move1 = room["rounds"][-1][p1]
+        move2 = room["rounds"][-1][p2]
+        result1, result2 = determine_result(move1, move2)
+        winner = p1 if result1 == "Win!" else p2 if result2 == "Win!" else None
+        room["rounds"][-1]["winner"] = winner
+
+        if winner in [p1, p2]:
+            room["players"][winner]["w"] += 1
+            room["players"][p2 if winner == p1 else p1]["l"] += 1
+
+            # Check if the winner has reached the required wins to win the game
+            if room["players"][winner]["w"] != room["wins2win"]:
+                # Continue the game with a new round
+                room["rounds"].append({
+                    "round": len(room["rounds"]) + 1,
+                    p1: None,
+                    p2: None,
+                    "winner": None
+                })
+
+                game_result_data = {"winner": winner, "game_over": False, "moves": [move1, move2]}
+                socketio.emit("game_result", game_result_data, room=room_id)
+                log.info(f"Added new round for room {room_id}. Current status: {room['players'][winner]['w']} wins.")
+            else:
+                # Game is over
+                room["status"] = "over"
+                room["final_winner"] = winner
+                log.info(f"Game over in room {room_id}. Winner: {winner}")
+
+                # Update leaderboard
                 leaderboard = load_leaderboard()
                 for player in [p1, p2]:
                     if player not in leaderboard and player != "AI":
                         leaderboard[player] = {"r": 0.0, "w": 0, "d": 0, "l": 0}
 
-                if room["step"]["winner"] in [p1, p2]:
-                    w, l = (p1, p2) if room["step"]["winner"] == p1 else (p2, p1)
-                    if w != "AI":
-                        leaderboard[w]["w"] += 1
-                    if l != "AI":
-                        leaderboard[l]["l"] += 1
-                else:
-                    for player in [p1, p2]:
-                        if player != "AI":
-                            leaderboard[player]["d"] += 1
+                for player in [p1, p2]:
+                    if player != "AI":
+                        leaderboard[player]["w"] += room["players"][player]["w"]
+                        leaderboard[player]["d"] += room["players"][player]["d"]
+                        leaderboard[player]["l"] += room["players"][player]["l"]
 
                 for player in [p1, p2]:
                     if player != "AI":
@@ -272,25 +312,34 @@ def handle_make_move(data):
                 save_leaderboard(leaderboard)
                 socketio.emit("leaderboard_updated", {"leaderboard": sorted_leaderboard})
 
-                for player in [p1, p2]:
-                    if player != "AI":
-                        player_sid = name_sid.get(player)
-                        if player_sid:
-                            opponent_move = move2 if player == p1 else move1
-                            result_message = result1 if player == p1 else result2
-                            socketio.emit("game_result",
-                                {"your_move": room["step"][player], "opponent_move": opponent_move, "result": result_message},
-                                room=player_sid)
+                game_result_data = {"winner": winner, "game_over": True, "moves": [move1, move2]}
+                socketio.emit("game_result", game_result_data, room=room_id)
+
+                # Save room history and remove the active room
                 save_room(room)
                 del rooms[room_id]
-                log.info(f"Game over in room {room_id}. Room data saved and removed from active rooms.")
+                log.info(f"Room {room_id} data saved and removed from active rooms.")
         else:
-            socketio.emit("error", {"message": "You are not in this room or game hasn't started"}, room=sid)
-            log.warning(f"Player {name} tried to make a move in room {room_id}, but is not a participant or game not started.")
+            # Handle draw scenario
+            room["players"][p1]["d"] += 1
+            room["players"][p2]["d"] += 1
+            log.info(f"Round resulted in a draw in room {room_id}.")
+            # Append a new round for the next round
+            room["rounds"].append({
+                "round": len(room["rounds"]) + 1,
+                p1: None,
+                p2: None,
+                "winner": None
+            })
+
+            game_result_data = {"winner": "", "game_over": False, "moves": [move1, move2]}
+            socketio.emit("game_result", game_result_data, room=room_id)
+
+        # After processing the round, emit room updates
+        emit_rooms_update()
     else:
-        socketio.emit("error", {"message": "Invalid room ID"}, room=sid)
-        log.warning(f"Invalid room {room_id} by {name}")
-    emit_rooms_update()
+        # If not all players have made their moves yet, just update room status
+        emit_rooms_update()
 
 @socketio.on("quit_game")
 def handle_quit_game(data):
