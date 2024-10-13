@@ -17,6 +17,7 @@ function App() {
 
   const [editingName, setEditingName] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [displayLeaderboard, setDisplayLeaderboard] = useState(false);
 
   const [socket, setSocket] = useState(null);
   const [roomId, setRoomId] = useState(null);
@@ -25,8 +26,10 @@ function App() {
   const [rooms, setRooms] = useState([]);
   const [rounds, setRounds] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
-  const [players, setPlayers] = useState([]); 
+  const [players, setPlayers] = useState([]);
+  const [scores, setScores] = useState([]);
 
+  const [wins2win, setWins2win] = useState(2);
 
   useEffect(() => {
     const newSocket = io(SOCKET_SERVER_URL);
@@ -68,10 +71,16 @@ function App() {
       console.log(`New room created ${room_id}`);
     });
 
+    newSocket.on("wins2win_updated", ({ wins2win }) => {
+      setWins2win(wins2win);
+      console.log(`Wins to win updated to ${wins2win}`);
+    });
+
     newSocket.on("game_result", (data) => {
-      const { winner, game_over, moves } = data;
-      const newRound = {winner: winner, move1: moves[0], move2: moves[1]};
+      const { winner, game_over, moves, scores } = data;
+      const newRound = { winner: winner, move1: moves[0], move2: moves[1], scores: scores };
       setRounds(prevRounds => [...prevRounds, newRound]);
+      setScores(scores);
       if (game_over) {
         console.log(`Game over in room ${roomId}`);
         changeGameState("game_over");
@@ -88,6 +97,7 @@ function App() {
       const transformedRooms = rooms.map(room => ({
         room_id: room.room_id,
         status: room.status,
+        wins2win: room.wins2win,
         num_players: Object.keys(room.players).length,
         players: room.players
       }));
@@ -95,7 +105,12 @@ function App() {
       console.log("Rooms updated:", transformedRooms);
     });
 
-    newSocket.on("opponent_left", quitGame);
+    newSocket.on("player_left", ({ player }) => {
+      console.log(`Player ${player} has left the room.`);
+      // Optionally, update the players list in the lobby
+      setPlayers(prevPlayers => prevPlayers.filter(p => p !== player));
+    });
+
     newSocket.on("error", quitGame);
 
     return () => {
@@ -147,8 +162,9 @@ function App() {
   };
 
   const startGame = (mode) => {
-    setRounds([]); // Clear previous rounds
-    socket?.emit("create_room", { mode });
+    setRounds([]);
+    setScores([]);
+    socket?.emit("create_room", { mode, wins2win });
   };
 
   const handleChoice = (choice) => {
@@ -236,6 +252,7 @@ function App() {
     setGameState("main");
     setRounds([]); // Clear rounds on quit
     setSelectedChoice(null); // Reset the selected choice on quit
+    setWins2win(2);
   };
 
   const updateNameInput = (e) => {
@@ -257,12 +274,13 @@ function App() {
     }
   };
 
-  const joinRoom = (roomId) => {
+  const joinRoom = (room_id) => {
     if (socket) {
-      socket.emit("join_room", { room: roomId });
-      setRoomId(roomId);
+      socket.emit("join_room", { room: room_id });
+      setRoomId(room_id);
+      setWins2win(rooms.find(room => room.room_id === room_id).wins2win);
       changeGameState("lobby");
-      console.log(`Joined room ${roomId}`);
+      console.log(`Joined room ${room_id}`);
     } else {
       console.error("Socket not ready yet, unable to join room.");
     }
@@ -271,20 +289,8 @@ function App() {
   const changeGameState = (newState) => {
     if (["lobby", "running"].includes(gameState) && !["lobby", "running"].includes(newState)) {
       quitGame();
-    } else if (!["lobby", "running"].includes(gameState) && newState === "lobby") {
-      console.log("Entering lobby or running state.");
     }
     setGameState(newState);
-  };
-
-  const handleReady = () => {
-    console.log(`Socket: ${socket}, roomId: ${roomId}`);
-    if (socket && roomId) {
-      const newStatus = !isReady;
-      setIsReady(newStatus);
-      socket.emit("player_ready", { room: roomId, status: newStatus ? "ready" : "waiting" });
-      console.log(`Player ${name} is ${newStatus ? "ready" : "waiting"} in room ${roomId}`);
-    }
   };
 
   const fallbackCopyTextToClipboard = (text) => {
@@ -313,240 +319,260 @@ function App() {
     }
   };
 
+  const toggleLeaderboard = () => setDisplayLeaderboard(prev => !prev);
+
+  const handleReady = () => {
+    if (socket && roomId) {
+      const newStatus = !isReady;
+      setIsReady(newStatus);
+      socket.emit("player_ready", { room: roomId, status: newStatus ? "ready" : "waiting" });
+      console.log(`Player ${name} is ${newStatus ? "ready" : "waiting"} in room ${roomId}`);
+    }
+  };
+
+  const handleWins2win = (e) => {
+    if (socket && roomId) {
+      const newWins2win = Math.max(1, Math.min(5, wins2win + e));
+      setWins2win(newWins2win);
+      socket.emit("update_wins2win", { room: roomId, wins2win: newWins2win });
+      console.log(`Wins to win updated to ${newWins2win}`);
+    }
+  }
+
   return (
     <div className="app">
       <div className="header_container">
         <div className="button_container">
+          <button className="button" onClick={toggleLeaderboard}>🏆</button>
           <div className={editingName ? "" : "text_display"} style={editingName ? {} : { fontSize: "3vh" }}>
             {editingName ? (<input className="text_input" type="text" value={name} onChange={updateNameInput} />) : (name)}
           </div>
           <button className="button" onClick={handleEditOrSave} disabled={editingName && !!nameError}>
-            {editingName ? "Save" : "Edit"}
+            {editingName ? "✔️" : "✏️"}
           </button>
-          <div className="text_display" style={{fontSize:"2vh"}}>{gameState}</div>
+          {/* <div className="text_display" style={{fontSize:"2vh"}}>{gameState}</div> */}
         </div>
       </div>
 
-      {nameError ? (<div className="text_display">{nameError}</div>) : (
-        <div className="main_container">
-          {gameState === "main" && (
-            <div className="button_container">
-              <button className="button" onClick={() => changeGameState("menu")}>Rock, Paper, Scissors</button>
-            </div>
-          )}
-
-          {gameState === "menu" && (
-            <div>
-              <div className="text_display">Select Mode</div>
-              <div className="button_container">
-                <button className="button" onClick={() => startGame("ai")}>Versus AI</button>
-                <button className="button" onClick={() => startGame("online")}>Versus Player</button>
-              </div>
-            </div>
-          )}
-
-          {gameState === "lobby" && (
-            <div className="table_menu_container">
-              <div className="text_display">Available Rooms</div>
-              <div className="table_container">
-                <table className="rooms_table">
-                  <thead>
-                    <tr>
-                      <th onClick={() => handleSort("room_id", "rooms")}>Room</th>
-                      <th onClick={() => handleSort("status", "rooms")}>S</th>
-                      <th onClick={() => handleSort("num_players", "rooms")}>nb</th>
-                      <th>Players</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedRooms.filter(room => {
-                      return room.players && !Object.keys(room.players).includes(name);
-                    }).length > 0 ? (
-                      sortedRooms.filter(room => room.players && !Object.keys(room.players).includes(name)).map((room) => (
-                        <tr key={room.room_id}>
-                          <td>{room.room_id.substring(0, 3)}...</td>
-                          <td>{room.status === "running" ? "🟢" : "🔴"}</td>
-                          <td>{room.num_players}/2</td>
-                          <td>
-                            <ul className="player_list">
-                              {Object.keys(room.players).map((player, index) => (
-                                <li key={index}>
-                                  {room.players[player].status === "ready" ? "🟢" : "🔴"} {player}
-                                </li>
-                              ))}
-                            </ul>
-                          </td>
-                          <td>
-                            {room.status == "waiting" && (
-                              <button className="button" onClick={() => joinRoom(room.room_id)}>Go</button>
-                            )}
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan="5">No available rooms.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <div className="text_display">Share Link:</div>
-              <div className="button_container">
-                <input type="text" readOnly className="text_input"
-                  value={`${window.location.origin}/?room=${roomId}`}
-                  onFocus={(e) => e.target.select()}/>
-                <button className="button" onClick={() => handleCopyURL(`${window.location.origin}/?room=${roomId}`)}>
-                  Copy
-                </button>
-              </div>
-            </div>
-          )}
-
-          {gameState === "running" && (
-            <div>
-              <div className="text_display">Choose Your Move</div>
-              <div className="button_container">
-                <button
-                  className={selectedChoice === "Rock" ? "highlighted_button" : "button"}
-                  onClick={() => handleChoice("Rock")}>Rock</button>
-                <button
-                  className={selectedChoice === "Paper" ? "highlighted_button" : "button"}
-                  onClick={() => handleChoice("Paper")}>Paper</button>
-                <button
-                  className={selectedChoice === "Scissors" ? "highlighted_button" : "button"}
-                  onClick={() => handleChoice("Scissors")}>Scissors</button>
-              </div>
-              <div className="text_display">Game History</div>
-              <div className="table_container">
-                <table className="rounds_table">
-                  <thead>
-                    <tr>
-                      <th>R</th>
-                      <th>{players[0]}</th>
-                      <th>{players[1]}</th>
-                      <th>Winner</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rounds.map((round, index) => (
-                      <tr key={index}>
-                        <td>{index + 1}</td>
-                        <td>{round.move1}</td>
-                        <td>{round.move2}</td>
-                        <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {gameState === "game_over" && (
-            <div className="table_menu_container">
-              <div className="text_display">Final Results</div>
-              <div className="table_container">
-                <table className="rounds_table">
-                  <thead>
-                    <tr>
-                      <th>R</th>
-                      <th>{players[0]}</th>
-                      <th>{players[1]}</th>
-                      <th>Winner</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rounds.map((round, index) => (
-                      <tr key={index}>
-                        <td>{index + 1}</td>
-                        <td>{round.move1}</td>
-                        <td>{round.move2}</td>
-                        <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="text_display">Leaderboard</div>
-              <div className="table_container">
-                <table className="leaderboard_table">
-                  <thead>
-                    <tr>
-                      <th></th>
-                      <th onClick={() => handleSort("r", "leaderboard")}>R</th>
-                      <th onClick={() => handleSort("w", "leaderboard")}>W</th>
-                      <th onClick={() => handleSort("d", "leaderboard")}>D</th>
-                      <th onClick={() => handleSort("l", "leaderboard")}>L</th>
-                      <th onClick={() => handleSort("n", "leaderboard")}>Name</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedLeaderboard.map((entry, index) => (
-                      <tr key={index}>
-                        <td>{index + 1}</td>
-                        <td>{entry.r.toFixed(0)}</td>
-                        <td>{entry.w}</td>
-                        <td>{entry.d}</td>
-                        <td>{entry.l}</td>
-                        <td>{entry.n}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {gameState === "menu" && (
-        <div className="footer_container">
-          <div className="button_container">
-            <button className="button" onClick={() => changeGameState("main")}>Back</button>
+      {displayLeaderboard && (<div className="main_container">
+        <div className="table_menu_container">
+          <div className="text_display">Leaderboard</div>
+          <div className="table_container">
+            <table className="leaderboard_table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th onClick={() => handleSort("r", "leaderboard")}>R</th>
+                  <th onClick={() => handleSort("w", "leaderboard")}>W</th>
+                  <th onClick={() => handleSort("d", "leaderboard")}>D</th>
+                  <th onClick={() => handleSort("l", "leaderboard")}>L</th>
+                  <th onClick={() => handleSort("n", "leaderboard")}>Name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedLeaderboard.map((entry, index) => (
+                  <tr key={index}>
+                    <td className={entry.n === name ? "highlighted_text" : ""}>{index + 1}</td>
+                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.r.toFixed(0)}</td>
+                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.w}</td>
+                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.d}</td>
+                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.l}</td>
+                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
+      </div>)}
 
-      {gameState === "lobby" && (
-        <div className="footer_container">
-          <div className="button_container">
-            <button className="button" onClick={quitGame}>Quit</button>
-            <ul className="player_list">
-              {rooms.find(room => room.room_id === roomId)?.players && Object.entries(rooms.find(room => room.room_id === roomId).players).map(([player, info], index) => (
-                <li key={index}>
-                  {info.status === "ready" ? "🟢" : "🔴"} {player}
-                </li>
-              ))}
-            </ul>
-            <button className="button" onClick={handleReady}>{isReady ? "Wait" : "Ready"}</button>
-          </div>
-        </div>
-      )}
+      {nameError || displayLeaderboard ? (<div className="text_display">{nameError}</div>) : (<div className="main_container">
 
-      {gameState === "running" && (
-        <div className="footer_container">
-          <div className="button_container">
-            <button className="button" onClick={() => changeGameState("main")}>Quit</button>
-            <ul className="player_list">
-              {rooms.find(room => room.room_id === roomId)?.players && Object.entries(rooms.find(room => room.room_id === roomId).players).map(([player, info], index) => (
-                <li key={index}>
-                  {info.played ? "🟢" : "🔴"} {player}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
+        {gameState === "main" && (<div className="button_container">
+          <button className="button" onClick={() => changeGameState("menu")}>✊✋✌️</button>
+        </div>)}
 
-      {gameState === "game_over" && (
-        <div className="footer_container">
+        {gameState === "menu" && (<div>
+          <div className="text_display">Select Mode</div>
           <div className="button_container">
-            <button className="button" onClick={quitGame}>Main Menu</button>
+            <button className="button" onClick={() => startGame("ai")}>Versus AI</button>
+            <button className="button" onClick={() => startGame("online")}>Versus Player</button>
           </div>
-        </div>
-      )}
+        </div>)}
+
+        {gameState === "lobby" && (<div className="table_menu_container">
+          <div className="text_display">Others Rooms</div>
+          <div className="table_container">
+            <table className="rooms_table">
+              <thead>
+                <tr>
+                  <th>R</th>
+                  <th onClick={() => handleSort("status", "rooms")}>S</th>
+                  <th onClick={() => handleSort("num_players", "rooms")}>nb</th>
+                  <th>Players</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedRooms.filter(room => {
+                  return room.players && !Object.keys(room.players).includes(name);
+                }).length > 0 ? (
+                  sortedRooms.filter(room => room.players && !Object.keys(room.players).includes(name)).map((room) => (
+                    <tr key={room.room_id}>
+                      <td>{room.wins2win}</td>
+                      <td>{room.status === "running" ? "🟢" : "🔴"}</td>
+                      <td>{room.num_players}/2</td>
+                      <td>
+                        <ul className="player_list">
+                          {Object.keys(room.players).map((player, index) => (
+                            <li key={index}>
+                              {room.players[player].status === "ready" ? "🟢" : "🔴"} {player}
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                      <td>
+                        {room.status == "waiting" && (
+                          <button className="button" onClick={() => joinRoom(room.room_id)}>Go</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="5">No available rooms.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="text_display">Share Link:</div>
+          <div className="button_container">
+            <input type="text" readOnly className="text_input"
+              value={`${window.location.origin}/?room=${roomId}`}
+              onFocus={(e) => e.target.select()}/>
+            <button className="button" onClick={() => handleCopyURL(`${window.location.origin}/?room=${roomId}`)}>
+              Copy
+            </button>
+          </div>
+          <div className="text_display">Wins to Win:</div>
+          <div className="button_container">
+            <button className="button" disabled={wins2win <= 1}
+              onClick={() => handleWins2win(-1)}>-1</button>
+            <div className="text_display">{wins2win}</div>
+            <button className="button" disabled={wins2win >= 5}
+              onClick={() => handleWins2win(1)}>+1</button>
+          </div>
+        </div>)}
+
+        {gameState === "running" && (<div>
+          <div className="text_display">Choose Your Move</div>
+          <div className="button_container">
+            <button
+              className={selectedChoice === "Rock" ? "highlighted_button" : "button"}
+              onClick={() => handleChoice("Rock")}>✊</button>
+            <button
+              className={selectedChoice === "Paper" ? "highlighted_button" : "button"}
+              onClick={() => handleChoice("Paper")}>✋</button>
+            <button
+              className={selectedChoice === "Scissors" ? "highlighted_button" : "button"}
+              onClick={() => handleChoice("Scissors")}>✌️</button>
+          </div>
+          <div className="text_display">Game History</div>
+          <div className="table_container">
+            <table className="rounds_table">
+              <thead>
+                <tr>
+                  <th>R</th>
+                  <th>{players[0]}</th>
+                  <th>{players[1]}</th>
+                  <th>Winner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rounds.map((round, index) => (
+                  <tr key={index}>
+                    <td>{index + 1}</td>
+                    <td>{round.move1 === "Rock" ? "✊" : round.move1 === "Paper" ? "✋" : "✌️"}</td>
+                    <td>{round.move2 === "Rock" ? "✊" : round.move2 === "Paper" ? "✋" : "✌️"}</td>
+                    <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td></td>
+                  <td className={scores[0] === Math.max(...scores) ? "win" : scores[0] === Math.min(...scores) ? "lose" : ""}>{scores[0]}</td>
+                  <td className={scores[1] === Math.max(...scores) ? "win" : scores[1] === Math.min(...scores) ? "lose" : ""}>{scores[1]}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>)}
+
+        {gameState === "game_over" && (<div className="table_menu_container">
+          <div className="text_display">Final Results</div>
+          <div className="table_container">
+            <table className="rounds_table">
+              <thead>
+                <tr>
+                  <th>R</th>
+                  <th>{players[0]}</th>
+                  <th>{players[1]}</th>
+                  <th>Winner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rounds.map((round, index) => (
+                  <tr key={index}>
+                    <td>{index + 1}</td>
+                    <td>{round.move1 === "Rock" ? "✊" : round.move1 === "Paper" ? "✋" : "✌️"}</td>
+                    <td>{round.move2 === "Rock" ? "✊" : round.move2 === "Paper" ? "✋" : "✌️"}</td>
+                    <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td></td>
+                  <td className={scores[0] === Math.max(...scores) ? "win" : scores[0] === Math.min(...scores) ? "lose" : ""}>{scores[0]}</td>
+                  <td className={scores[1] === Math.max(...scores) ? "win" : scores[1] === Math.min(...scores) ? "lose" : ""}>{scores[1]}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>)}
+
+      </div>)}
+
+      {!displayLeaderboard && (<div className="footer_container">
+
+        {gameState === "menu" && (<div className="button_container">
+          <button className="button" onClick={() => changeGameState("main")}>Back</button>
+        </div>)}
+
+        {gameState === "lobby" && (<div className="button_container">
+          <button className="button" onClick={quitGame}>Quit</button>
+          <ul className="player_list">
+            {rooms.find(room => room.room_id === roomId)?.players && Object.entries(rooms.find(room => room.room_id === roomId).players).map(([player, info], index) => (
+              <li key={index}>{info.status === "ready" ? "🟢" : "🔴"} {player}</li>
+            ))}
+          </ul>
+          <button className="button" onClick={handleReady}>{isReady ? "Wait" : "Ready"}</button>
+        </div>)}
+
+        {gameState === "running" && (<div className="button_container">
+          <button className="button" onClick={() => changeGameState("main")}>Quit</button>
+          <ul className="player_list">
+            {rooms.find(room => room.room_id === roomId)?.players && Object.entries(rooms.find(room => room.room_id === roomId).players).map(([player, info], index) => (
+              <li key={index}>{info.played ? "🟢" : "🔴"} {player}</li>
+            ))}
+          </ul>
+        </div>)}
+
+        {gameState === "game_over" && (<div className="button_container">
+          <button className="button" onClick={quitGame}>Main Menu</button>
+        </div>)}
+
+      </div>)}
     </div>
   );
 }

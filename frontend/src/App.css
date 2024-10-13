@@ -243,3 +243,7 @@ tr:nth-child(odd) td {
 .lose {
   color: #F00;
 }
+
+.highlighted_text {
+  color: #0FC;
+}

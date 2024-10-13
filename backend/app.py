@@ -79,6 +79,7 @@ def emit_rooms_update():
         current_rooms.append({
             "room_id": room_id,
             "status": room_info["status"],
+            "wins2win": room_info["wins2win"],
             "num_players": len(room_info["players"]),
             "players": room_info["players"]
         })
@@ -91,9 +92,15 @@ def clean_room_from_player(room_id, name):
             del room["players"][name]
             leave_room(room_id)
             log.info(f"Player {name} left room {room_id}")
-            if len(room["players"]) < 2:
+            
+            # Only delete the room if it's not in 'waiting' or 'lobby' status and has insufficient players
+            if room["status"] != "waiting" and len(room["players"]) < 2:
                 del rooms[room_id]
                 log.info(f"Deleted room {room_id} due to insufficient players.")
+            elif room["status"] == "waiting" and len(room["players"]) == 0:
+                # Optionally delete the room if it's in 'waiting' and no players are left
+                del rooms[room_id]
+                log.info(f"Deleted empty room {room_id} in 'waiting' status.")
         else:
             log.warning(f"Player {name} tried to leave room {room_id}, but is not a participant.")
     else:
@@ -106,12 +113,19 @@ def clean_rooms_from_player(name):
             del room["players"][name]
             leave_room(room_id)
             log.info(f"Player {name} left room {room_id}")
-            if len(room["players"]) < 2:
+            
+            # Only mark the room for deletion if it's not in 'waiting' or 'lobby' status and has insufficient players
+            if room["status"] != "waiting" and len(room["players"]) < 2:
                 rooms_to_delete.append(room_id)
-                log.info(f"Marked room {room_id} for deletion")
+                log.info(f"Marked room {room_id} for deletion.")
+            elif room["status"] == "waiting" and len(room["players"]) == 0:
+                # Optionally mark the room for deletion if it's in 'waiting' and no players are left
+                rooms_to_delete.append(room_id)
+                log.info(f"Marked empty room {room_id} in 'waiting' status for deletion.")
+    
     for room_id in rooms_to_delete:
         del rooms[room_id]
-        log.info(f"Deleted empty room {room_id}")
+        log.info(f"Deleted room {room_id}.")
 
 @app.route("/submit", methods=["POST"])
 def submit_score():
@@ -143,10 +157,11 @@ def handle_set_name(data):
 @socketio.on("create_room")
 def handle_create_room(data):
     mode = data.get("mode", "online")
+    wins2win = data.get("wins2win", 2)
+    wins2win = max(1, min(5, wins2win))
     sid = request.sid
     name = sid_name.get(sid)
     clean_rooms_from_player(name)
-    wins2win = 2
     if mode == "ai":
         room_id = str(uuid.uuid4())
         rooms[room_id] = {
@@ -154,7 +169,7 @@ def handle_create_room(data):
             "wins2win": wins2win,
             "players": {
                 name: {"status": "ready", "team": 1, "played": False, "w": 0, "d": 0, "l": 0},
-                "AI": {"status": "ready", "team": 2, "played": False, "w": 0, "d": 0, "l": 0},
+                "AI": {"status": "ready", "team": 2, "played": True, "w": 0, "d": 0, "l": 0},
             },
             "rounds": [{"round": 1, name: None, "AI": None, "winner": None}]
         }
@@ -225,6 +240,21 @@ def handle_player_ready(data):
         socketio.emit("error", {"message": "Invalid room or player"}, room=sid)
         log.warning(f"Player {name} attempted to set ready in invalid room {room_id}.")
 
+@socketio.on("update_wins2win")
+def handle_update_wins2win(data):
+    room_id = data.get("room")
+    wins2win = data.get("wins2win")
+    sid = request.sid
+    name = sid_name.get(sid)
+    if room_id in rooms and name in rooms[room_id]["players"]:
+        rooms[room_id]["wins2win"] = wins2win
+        log.info(f"Player {name} updated wins2win to {wins2win} in room {room_id}.")
+        socketio.emit("wins2win_updated", {"wins2win": wins2win}, room=room_id)
+        emit_rooms_update()
+    else:
+        socketio.emit("error", {"message": "Invalid room or player"}, room=sid)
+        log.warning(f"Player {name} attempted to update wins2win in invalid room {room_id}.")
+
 @socketio.on("make_move")
 def handle_make_move(data):
     room_id = data.get("room")
@@ -259,7 +289,8 @@ def handle_make_move(data):
 
     if all(v["played"] for v in room["players"].values()):
         for player in room["players"]:
-            room["players"][player]["played"] = False
+            if player != "AI":
+                room["players"][player]["played"] = False
         p1, p2 = sorted(room["players"].keys())
         move1 = room["rounds"][-1][p1]
         move2 = room["rounds"][-1][p2]
@@ -281,7 +312,8 @@ def handle_make_move(data):
                     "winner": None
                 })
 
-                game_result_data = {"winner": winner, "game_over": False, "moves": [move1, move2]}
+                scores = [room["players"][p1]["w"], room["players"][p2]["w"]]
+                game_result_data = {"winner": winner, "game_over": False, "moves": [move1, move2], "scores": scores}
                 socketio.emit("game_result", game_result_data, room=room_id)
                 log.info(f"Added new round for room {room_id}. Current status: {room['players'][winner]['w']} wins.")
             else:
@@ -312,7 +344,8 @@ def handle_make_move(data):
                 save_leaderboard(leaderboard)
                 socketio.emit("leaderboard_updated", {"leaderboard": sorted_leaderboard})
 
-                game_result_data = {"winner": winner, "game_over": True, "moves": [move1, move2]}
+                scores = [room["players"][p1]["w"], room["players"][p2]["w"]]
+                game_result_data = {"winner": winner, "game_over": True, "moves": [move1, move2], "scores": scores}
                 socketio.emit("game_result", game_result_data, room=room_id)
 
                 # Save room history and remove the active room
@@ -332,7 +365,8 @@ def handle_make_move(data):
                 "winner": None
             })
 
-            game_result_data = {"winner": "", "game_over": False, "moves": [move1, move2]}
+            scores = [room["players"][p1]["w"], room["players"][p2]["w"]]
+            game_result_data = {"winner": "", "game_over": False, "moves": [move1, move2], "scores": scores}
             socketio.emit("game_result", game_result_data, room=room_id)
 
         # After processing the round, emit room updates
@@ -348,6 +382,8 @@ def handle_quit_game(data):
     name = sid_name.get(sid)
     clean_room_from_player(room_id, name)
     emit_rooms_update()
+    if room_id in rooms:
+        socketio.emit("player_left", {"player": name}, room=room_id)
 
 @socketio.on("disconnect")
 def handle_disconnect():
