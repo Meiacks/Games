@@ -5,11 +5,10 @@
 * {
   background-color: #333;
   color: #FFF;
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000,
-                0px 1px 0 #000, 1px 0px 0 #000, 0px -1px 0 #000, -1px 0px 0 #000;
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px  1px 0 #000,  1px 1px 0 #000,
+                0px  1px 0 #000, 1px  0px 0 #000,  0px -1px 0 #000, -1px 0px 0 #000;
   font-family: 'Calibri', sans-serif;
 }
-
 
 body {
   display: flex;
@@ -44,7 +43,7 @@ body {
 .header_container {
   display: flex;
   justify-content: center;
-  height: 5vh;
+  height: 6vh;
   padding: 1vh;
 }
 
@@ -246,4 +245,21 @@ tr:nth-child(odd) td {
 
 .highlighted_text {
   color: #0FC;
+}
+
+.circle_wrapper {
+  width: 4.5vh;
+  height: 4.5vh;
+  border-radius: 50%;
+  border: 2px solid #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.circle_wrapper img {
+  width: 80%;
+  height: 80%;
+  object-fit: contain;
 }

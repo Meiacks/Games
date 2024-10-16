@@ -1,6 +1,6 @@
 backend/db
 backend/test.py
 backend/__pycache__
+backend/venv
 frontend/node_modules
-node_modules/
 output.txt
