@@ -75,6 +75,10 @@ body {
   cursor: pointer;
 }
 
+.button:disabled {
+  opacity: 0.4;
+}
+
 .highlighted_button {
   background-color: #777;
 }
@@ -160,6 +164,10 @@ th,
 td {
   background-color: #333;
   padding: 0.3vh 0.6vh 0.3vh 0.8vh;
+}
+
+td img {
+  display: block;
 }
 
 th {
@@ -262,4 +270,8 @@ tr:nth-child(odd) td {
   width: 80%;
   height: 80%;
   object-fit: contain;
+}
+
+.avatar {
+  background-color: transparent;
 }

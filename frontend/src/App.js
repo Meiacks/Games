@@ -13,7 +13,7 @@ function App() {
   const nameRef = useRef(name);
   const [nameError, setNameError] = useState("");
 
-  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "room_id", direction: "asc" });
+  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "rid", direction: "asc" });
   const [leaderboardSortConfig, setLeaderboardSortConfig] = useState({ key: "r", direction: "desc" });
 
   const [editingName, setEditingName] = useState(false);
@@ -32,13 +32,14 @@ function App() {
   const [rounds, setRounds] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [players, setPlayers] = useState([]);
-  const [scores, setScores] = useState([]);
-  const [avatarList, setAvatarList] = useState([]);
+
+  const [avatarList, setAvatarList] = useState({});
 
   const [wins2win, setWins2win] = useState(2);
+  const [roomSize, setRoomSize] = useState(2);
   const [roomRank, setRoomRank] = useState(0);
 
-  const colors = ["#0AF", "#F00"]
+  const colors = ["#0AF", "#F00", "#0C3", "#DD0", "#B0D"]
   
   useEffect(() => {
     const newSocket = io(SOCKET_SERVER_URL, {
@@ -77,45 +78,42 @@ function App() {
     });
 
     fetch(`${SOCKET_SERVER_URL}/avatars/batch`)
-      .then(response => response.json())
-      .then(d => {
-        if (d.avatar_list) {
-          setAvatarList(Object.entries(d.avatar_list));
-        } else {
-          console.error("Failed to fetch batch avatars:", d.error);
-        }
-      })
-      .catch(err => {
-        console.error("Error fetching batch avatars:", err);
-      }
-    );
+      .then(r => r.json())
+      .then(d => {setAvatarList(d.avatar_list)})
+      .catch(e => {console.error("Error fetching batch avatars:", e)});
 
-    newSocket.on("leaderboard_updated", ({ leaderboard }) => setLeaderboard(leaderboard));
+    newSocket.on("players_updated", ({ d }) => setLeaderboard(d.players));
 
     newSocket.on("room_created", ({ d }) => {
-      setRoomId(d.room_id);
+      setRoomId(d.rid);
       setPlayers(d.players);
       changeGameState("lobby");
-      console.log(`New room created: ${d.room_id}`);
+      console.log(`New room created: ${d.rid}`);
     });
 
     newSocket.on("room_joined", ({ d }) => {
-      setRoomId(d.room_id);
+      setRoomId(d.rid);
       setPlayers(d.players);
       changeGameState("lobby");
-      console.log(`New player in room ${d.room_id}`);
+      console.log(`New player in room ${d.rid}`);
     });
 
-    newSocket.on("wins2win_updated", ({ d }) => {
-      setWins2win(d.wins2win);
-      console.log(`Wins to win updated to ${d.wins2win}`);
+    newSocket.on("room_updated", ({ d }) => {
+      if (d.wins2win !== undefined) {
+        setWins2win(d.wins2win);
+        console.log(`Wins to win updated to ${d.wins2win}`);
+      }
+      if (d.rsize !== undefined) {
+        setRoomSize(d.rsize);
+        console.log(`Room size updated to ${d.rsize}`);
+      }
     });
 
     newSocket.on("game_start", ({ d }) => {
-      setRoomId(d.room_id);
+      setRoomId(d.rid);
       setPlayers(d.players);
       changeGameState("running");
-      console.log(`Game started in room ${d.room_id}`);
+      console.log(`Game started in room ${d.rid}`);
     });
 
     newSocket.on("player_left", ({ d }) => {
@@ -128,37 +126,34 @@ function App() {
     });
 
     newSocket.on("game_result", ({ d }) => {
-      const newRound = {winner: d.winner, move1: d.moves[0], move2: d.moves[1], scores: d.scores};
-      setRounds(prevRounds => [...prevRounds, newRound]);
-      setScores(d.scores);
+      setRounds(d.rounds);
       if (d.game_over) {
         console.log(`Game over in room ${roomId}`);
         changeGameState("game_over");
       } else {
-        console.log(`Round winner: ${d.winner} in room: ${d.roomId}`);
+        console.log(`Round winner: ${d.winner} in room: ${roomId}`);
         setSelectedChoice(null);
       }
     });
 
     newSocket.on("rooms_updated", ({ d }) => {
       const transformedRooms = d.rooms.map(r => ({
-        room_id: r.room_id, status: r.status, wins2win: r.wins2win, nb: r.nb, players: r.players
+        rid: r.rid, status: r.status, wins2win: r.wins2win, rsize: r.rsize, nb: r.nb, players: r.players
       }));
       setRooms(transformedRooms);
       console.log("Rooms updated:", transformedRooms);
     });
 
-    newSocket.on("error", quitGame);
+    newSocket.on("error", (e) => {
+      console.error("Socket Error:", e.message || e);
+      alert(`Error: ${e.message || "An unexpected error occurred."}`);
+      quitGame();
+    });
 
     return () => {
       newSocket.disconnect();
     };
   }, []);
-
-  useEffect(() => {
-    const rank = players.map(p => p.name).indexOf(name);
-    setRoomRank(rank !== -1 ? rank : 0);
-  }, [players, name]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -174,6 +169,11 @@ function App() {
       }
     };
   }, [socket]);
+
+  useEffect(() => {
+    const rank = players.map(p => p.name).indexOf(name);
+    setRoomRank(rank !== -1 ? rank : 0);
+  }, [players, name]);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -206,11 +206,6 @@ function App() {
   }, [socket]); // Depend on the 'socket' variable
 
   useEffect(() => {
-    const img = new Image();
-    img.src = `${SOCKET_SERVER_URL}/avatars/${avatar}`;
-  }, [avatar]);
-
-  useEffect(() => {
     nameRef.current = name;
   }, [name]);
 
@@ -222,17 +217,12 @@ function App() {
 
   const startGame = (mode) => {
     setRounds([]);
-    setScores([]);
-    socket?.emit("create_room", { mode, wins2win });
+    socket?.emit("create_room", { mode, wins2win, roomSize });
   };
 
   const handleChoice = (choice) => {
     setSelectedChoice(choice);
     setIsReady(true);
-    console.log(`Player ${name} selected ${choice}`);
-    socket.emit("player_ready", { room: roomId, status: "ready" });
-    console.log(`socket: ${socket}, roomId: ${roomId}`);
-
     if (socket && roomId) {
       console.log(`Player ${name} made a move: ${choice}`);
       socket.emit("make_move", { room: roomId, move: choice });
@@ -292,6 +282,7 @@ function App() {
     setRounds([]);
     setPlayers([]);
     setWins2win(2);
+    setRoomSize(2);
     setIsReady(false);
     setSelectedChoice(null);
     setGameState("main");
@@ -302,6 +293,10 @@ function App() {
       setEditingName(false);
       if (newName.trim() === "") {
         setNameError("Name cannot be empty");
+        return;
+      }
+      if (/^ai\d+$/i.test(newName.trim())) {
+        setNameError("Name cannot be AI");
         return;
       }
       const trimmedNewName = newName.trim();
@@ -316,13 +311,17 @@ function App() {
     }
   };
 
-  const joinRoom = (room_id) => {
+  const joinRoom = (rid) => {
     if (socket) {
-      socket.emit("join_room", { room: room_id });
-      setRoomId(room_id);
-      setWins2win(rooms.find(room => room.room_id === room_id).wins2win);
+      socket.emit("join_room", { room: rid });
+      setRoomId(rid);
+      const room = rooms.find(r => r.rid === rid);
+      if (room) {
+        setWins2win(room.wins2win);
+        setRoomSize(room.rsize);
+      }
       changeGameState("lobby");
-      console.log(`Joined room ${room_id}`);
+      console.log(`Joined room ${rid}`);
     } else {
       console.error("Socket not ready yet, unable to join room.");
     }
@@ -389,50 +388,88 @@ function App() {
   const handleWins2win = (e) => {
     if (socket && roomId) {
       const newWins2win = Math.max(1, Math.min(5, wins2win + e));
-      socket.emit("update_wins2win", { room: roomId, wins2win: newWins2win });
+      setWins2win(newWins2win);
+      socket.emit("update_room", { room: roomId, wins2win: newWins2win });
     }
   }
 
+  const handleRoomSize = (e) => {
+    if (socket && roomId) {
+      const newRoomSize = Math.max(2, Math.min(5, roomSize + e));
+      setRoomSize(newRoomSize);
+      socket.emit("update_room", { room: roomId, rsize: newRoomSize });
+    }
+  }
+
+  const handleAis = (e) => {
+    if (socket && roomId) {
+      socket.emit("manage_ais", { room: roomId, ai_dif: e });
+    }
+  }
+
+  const tableEndRef = useRef(null);
+  useEffect(() => {
+    if (tableEndRef.current) {
+      tableEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [rounds]);
+
   const renderRoomTable = () => {
+    const room = rooms.find(r => r.rid === roomId);
+
+    if (!room || !room.players) {
+      return <div>Room not found or no players available.</div>;
+    }
+
+    const highestScore = Math.max(...Object.values(room.players).map(p => p.w));
+
     return (
       <div className="table_container">
         <table className="rounds_table">
           <thead>
             <tr>
               <th>R</th>
-              <th>
-                <div className="circle_wrapper" style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[0]}` }}>
-                  <img src={`${SOCKET_SERVER_URL}/avatars/${players[0].avatar}`} className="avatar" />
-                </div>
-              </th>
-              <th>
-                <div className="circle_wrapper" style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[1]}` }}>
-                  <img src={`${SOCKET_SERVER_URL}/avatars/${players[1].avatar}`} className="avatar" />
-                </div>
-              </th>
+              {players.map((p, i) => (
+                <th key={i}>
+                  <div className="circle_wrapper"
+                    style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
+                    <img src={avatarList[p.avatar]} alt={`${p.name}'s avatar`} />
+                  </div>
+                </th>
+              ))}
               <th>Winner</th>
             </tr>
           </thead>
           <tbody>
-            {rounds.map((round, index) => (
-              <tr key={index}>
-                <td>{index + 1}</td>
-                <td>{round.move1 === "Rock" ? "✊" : round.move1 === "Paper" ? "✋" : "✌️"}</td>
-                <td>{round.move2 === "Rock" ? "✊" : round.move2 === "Paper" ? "✋" : "✌️"}</td>
-                <td className={round.winner === name ? "win" : "lose"}>{round.winner}</td>
-              </tr>
+            {rounds.map((r, i) => (
+              <React.Fragment key={i}>
+                {r.steps.map((step, j) => (
+                  <tr key={`${i}-${j}`}>
+                    <td>{`${i + 1}.${j + 1}`}</td>
+                    {step.map((move, k) => (
+                      <td key={k}>
+                        {move === "R" ? "✊" : move === "P" ? "✋" : move === "S" ? "✌️" : ""}
+                      </td>
+                    ))}
+                    <td className={r.winner === name ? "win" : "lose"}>
+                      {j === r.steps.length - 1 ? r.winner : ""}
+                    </td>
+                  </tr>
+                ))}
+              </React.Fragment>
             ))}
-            <tr>
+            <tr ref={tableEndRef}> {/* This row acts as a scroll target */}
               <td></td>
-              <td className={scores[0] === Math.max(...scores) ? "win" : scores[0] === Math.min(...scores) ? "lose" : ""}>{scores[0]}</td>
-              <td className={scores[1] === Math.max(...scores) ? "win" : scores[1] === Math.min(...scores) ? "lose" : ""}>{scores[1]}</td>
+              {Object.values(room.players).map((p, i) => (
+                <td key={i} className={p.w === highestScore ? "win" : "lose"}>{p.w}</td>
+              ))}
               <td></td>
             </tr>
           </tbody>
         </table>
       </div>
     );
-  }
+  };
 
   return (
     <div className="app">
@@ -441,7 +478,7 @@ function App() {
           {!displayLeaderboard && !displaySettings && gameState != "main" &&
             <button className="button" onClick={() => setDisplayLeaderboard(prev => !prev)}>🏆</button>}
           {avatar && (<div className="circle_wrapper" style={{ marginLeft: "0.8vh", border: `2px solid ${colors[roomRank]}` }}>
-            <img src={`${SOCKET_SERVER_URL}/avatars/${avatar}`} className="avatar" />
+            <img src={avatarList[avatar]} alt="Your Avatar"/>
           </div>)}
           <div className="text_display" style={{ fontSize: "2vh" }}>{name}</div>
           {!displayLeaderboard && !displaySettings && !["lobby", "running"].includes(gameState) &&
@@ -459,20 +496,22 @@ function App() {
                   <th></th>
                   <th onClick={() => handleSort("r", "leaderboard")}>R</th>
                   <th onClick={() => handleSort("w", "leaderboard")}>W</th>
-                  <th onClick={() => handleSort("d", "leaderboard")}>D</th>
                   <th onClick={() => handleSort("l", "leaderboard")}>L</th>
+                  <th onClick={() => handleSort("avatar", "leaderboard")}>A</th>
                   <th onClick={() => handleSort("n", "leaderboard")}>Name</th>
                 </tr>
               </thead>
               <tbody>
-                {sortedLeaderboard.map((entry, index) => (
-                  <tr key={index}>
-                    <td className={entry.n === name ? "highlighted_text" : ""}>{index + 1}</td>
-                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.r.toFixed(0)}</td>
-                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.w}</td>
-                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.d}</td>
-                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.l}</td>
-                    <td className={entry.n === name ? "highlighted_text" : ""}>{entry.n}</td>
+                {sortedLeaderboard.map((p, i) => (
+                  <tr key={i}>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{i + 1}</td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.r.toFixed(0)}</td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.w}</td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.l}</td>
+                    <td style={{ padding: "0" }}>
+                      <img src={avatarList[p.avatar]} className="avatar" alt={`${p.n}'s Avatar`} />
+                    </td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.n}</td>
                   </tr>
                 ))}
               </tbody>
@@ -494,26 +533,28 @@ function App() {
           </div>
           <div className="button_container">
             <div className="circle_wrapper" style={{ marginRight: "1vh", border: `2px solid ${colors[roomRank]}` }}>
-              <img src={`${SOCKET_SERVER_URL}/avatars/${avatar}`} className="avatar" />
+              <img src={avatarList[avatar]} alt="Your Avatar"/>
             </div>
             <button className="button" onClick={() => setEditingAvatar(true)}>✏️</button>
           </div>
         </div>
       </div>)}
 
-      {editingAvatar && (<div className="main_container">
-        <div>
-          <div className="text_display">Select an Avatar</div>
-          <div className="button_container">
-            {avatarList.map(([avatarName, avatarDataURI], index) => (
-              <div key={index} className="circle_wrapper" onClick={() => handleEditingAvatar(avatarName)}
-                style={avatarName === avatar ? { border: `2px solid ${colors[roomRank]}` } : {}}>
-                <img className="avatar" src={avatarDataURI} alt={avatarName} />
-              </div>
-            ))}
+      {editingAvatar && (
+        <div className="main_container">
+          <div>
+            <div className="text_display">Select an Avatar</div>
+            <div className="button_container">
+              {Object.entries(avatarList).filter(([k]) => k !== "ai.svg").map(([k, v], i) => (
+                <div key={i} className="circle_wrapper" onClick={() => handleEditingAvatar(k)}
+                  style={k === avatar ? { border: `2px solid ${colors[roomRank]}` } : {}}>
+                  <img src={v} alt={k} />
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      </div>)}
+      )}
 
       {!name ? (<div className="main_container">
         <div className="text_display">Loading...</div>
@@ -539,40 +580,38 @@ function App() {
                 <thead>
                   <tr>
                     <th>R</th>
-                    <th onClick={() => handleSort("status", "rooms")}>S</th>
-                    <th onClick={() => handleSort("nb", "rooms")}>nb</th>
-                    <th>Players</th>
-                    <th></th>
+                    <th>S</th>
+                    <th onClick={() => handleSort("status", "rooms")}>O</th>
+                    <th onClick={() => handleSort("nb", "rooms")}>N</th>
+                    <th>P</th>
+                    <th>L</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedRooms.filter(r => {
-                    return r.players && !Object.keys(r.players).includes(name);
-                  }).length > 0 ? (
-                      sortedRooms.filter(r => r.players && !Object.keys(r.players).includes(name)).map((r) => (
-                        <tr key={r.room_id}>
-                          <td>{r.wins2win}</td>
-                          <td>{r.status === "running" ? "🟢" : "🔴"}</td>
-                          <td>{r.nb}/2</td>
-                          <td>
-                            <ul className="player_list">
-                              {Object.entries(r.players).map(([playerName, { status }], index) => (  // Iterate over entries
-                                <li key={index}>
-                                  {status === "ready" ? "🟢" : "🔴"} {playerName}
-                                </li>
-                              ))}
-                            </ul>
-                          </td>
-                          <td>
-                            {r.status === "waiting" && (
-                              <button className="button" onClick={() => joinRoom(r.room_id)}>Go</button>
-                            )}
-                          </td>
-                        </tr>
-                      ))
+                  {sortedRooms.filter(r => (r.players && !Object.keys(r.players).includes(name))).length > 0 ? (
+                    sortedRooms.filter(r => r.players && !Object.keys(r.players).includes(name)).map((r) => (
+                      <tr key={r.rid}>
+                        <td>{r.wins2win}</td>
+                        <td>{r.rsize}</td>
+                        <td>{r.status === "running" ? "🟢" : "🔴"}</td>
+                        <td>{r.nb}/{r.rsize}</td>
+                        <td>
+                          <ul className="player_list">
+                            {Object.entries(r.players).map(([k, v], i) => (
+                              <li key={i}>{v.status === "ready" ? "🟢" : "🔴"} {k}</li>
+                            ))}
+                          </ul>
+                        </td>
+                        <td>
+                          {r.status === "waiting" && Object.keys(r.players).length != r.rsize && (
+                            <button className="button" onClick={() => joinRoom(r.rid)}>Go</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
                   ) : (
                     <tr>
-                      <td colSpan="5">No available rooms.</td>
+                      <td colSpan="6">No available rooms.</td>
                     </tr>
                   )}
                 </tbody>
@@ -587,37 +626,50 @@ function App() {
           <div className="text_display">Share Link:</div>
           <div className="button_container">
             <input type="text" readOnly className="text_input"
-              value={`${window.location.origin}/?room=${roomId}`}
+              value={roomId ? `${window.location.origin}/?room=${roomId}` : ""}
               onFocus={(e) => e.target.select()}/>
             <button className="button" onClick={() => handleCopyURL(`${window.location.origin}/?room=${roomId}`)}>
               Copy
             </button>
           </div>
-          <div className="text_display">Wins to Win:</div>
           <div className="button_container">
-            <button className="button" disabled={wins2win <= 1}
-              onClick={() => handleWins2win(-1)}>-1</button>
+            <div className="text_display">Wins to Win:</div>
+            <button className="button" disabled={wins2win <= 1} onClick={() => handleWins2win(-1)}>-1</button>
             <div className="text_display">{wins2win}</div>
-            <button className="button" disabled={wins2win >= 5}
-              onClick={() => handleWins2win(1)}>+1</button>
+            <button className="button" disabled={5 <= wins2win} onClick={() => handleWins2win(1)}>+1</button>
+          </div>
+          <div className="button_container">
+            <div className="text_display">Room Size:</div>
+              <button className="button" onClick={() => handleRoomSize(-1)}
+                disabled={roomSize <= Object.keys(rooms.find(r => r.rid === roomId)?.players ?? {}).length}>-1</button>
+            <div className="text_display">{roomSize}</div>
+            <button className="button" disabled={5 <= roomSize} onClick={() => handleRoomSize(1)}>+1</button>
+          </div>
+          <div className="button_container">
+            <div className="text_display">Manage AIs:</div>
+            <button className="button" onClick={() => handleAis(-1)}
+              disabled={!Object.values(rooms.find(r => r.rid === roomId)?.players || []).some(p => p.is_ai)}>-1</button>
+              <div className="text_display">{Object.values(rooms.find(r => r.rid === roomId)?.players ?? {}).filter(v => v.is_ai).length}</div>
+            <button className="button" onClick={() => handleAis(1)}
+              disabled={roomSize <= Object.keys(rooms.find(r => r.rid === roomId)?.players ?? {}).length}>+1</button>
           </div>
         </div>)}
 
-        {gameState === "running" && (<div>
+        {gameState === "running" && (<div className="table_menu_container">
+          <div className="text_display">Game History</div>
+          {renderRoomTable()}
           <div className="text_display">Choose Your Move</div>
           <div className="button_container">
-            <button
-              className={selectedChoice === "Rock" ? "highlighted_button" : "button"}
-              onClick={() => handleChoice("Rock")}>✊</button>
-            <button
-              className={selectedChoice === "Paper" ? "highlighted_button" : "button"}
-              onClick={() => handleChoice("Paper")}>✋</button>
-            <button
-              className={selectedChoice === "Scissors" ? "highlighted_button" : "button"}
-              onClick={() => handleChoice("Scissors")}>✌️</button>
+            {["R", "P", "S"].map((choice) => (
+              <button onClick={() => handleChoice(choice)}
+                key={choice} className={selectedChoice === choice ? "highlighted_button" : "button"}
+                disabled={!rooms.find(r => r.rid === roomId)?.players[name]?.on}>
+                {choice === "R" ? "✊" : choice === "P" ? "✋" : "✌️"}
+              </button>
+            ))}
           </div>
-          <div className="text_display">Game History</div>{renderRoomTable()}
-        </div>)}
+        </div>
+        )}
 
         {gameState === "game_over" && (<div className="table_menu_container">
           <div className="text_display">Final Results</div>{renderRoomTable()}
@@ -635,7 +687,7 @@ function App() {
         </div>
       </div>) : editingAvatar ? (<div className="footer_container">
         <div className="button_container">
-              <button className="button" onClick={() => setEditingAvatar(false)}>Back</button>
+          <button className="button" onClick={() => setEditingAvatar(false)}>Back</button>
         </div>
       </div>) : (<div className="footer_container">
 
@@ -646,8 +698,9 @@ function App() {
         {gameState === "lobby" && (<div className="button_container">
           <button className="button" onClick={quitGame}>Quit</button>
           <ul className="player_list">
-            {rooms.find(r => r.room_id === roomId)?.players && Object.entries(rooms.find(r => r.room_id === roomId).players).map(([player, info], index) => (
-              <li key={index}>{info.status === "ready" ? "🟢" : "🔴"} {player}</li>
+            {rooms.find(r => r.rid === roomId)?.players &&
+              Object.entries(rooms.find(r => r.rid === roomId).players).map(([k, v], i) => (
+                <li key={i}>{v.status === "ready" ? "🟢" : "🔴"} {k}</li>
             ))}
           </ul>
           <button className="button" onClick={handleReady}>{isReady ? "Wait" : "Ready"}</button>
@@ -656,8 +709,9 @@ function App() {
         {gameState === "running" && (<div className="button_container">
           <button className="button" onClick={() => changeGameState("main")}>Quit</button>
           <ul className="player_list">
-            {rooms.find(r => r.room_id === roomId)?.players && Object.entries(rooms.find(r => r.room_id === roomId).players).map(([player, info], index) => (
-              <li key={index}>{info.played ? "🟢" : "🔴"} {player}</li>
+            {rooms.find(r => r.rid === roomId)?.players &&
+              Object.entries(rooms.find(r => r.rid === roomId).players).map(([k, v], i) => (
+                <li key={i}>{v.cmove ? "🟢" : "🔴"} {k}</li>
             ))}
           </ul>
         </div>)}
