@@ -2,10 +2,11 @@
 
 import eventlet
 from eventlet.event import Event
+from eventlet.semaphore import Semaphore
 eventlet.monkey_patch()
 
 import os, json, base64, random, string, logging, threading
-from flask import Flask, jsonify, request, make_response, send_from_directory
+from flask import Flask, jsonify, request, Response, make_response, send_from_directory
 from flask_cors import CORS
 from flask_compress import Compress
 from flask_socketio import SocketIO, join_room, leave_room
@@ -22,54 +23,71 @@ Compress(app)
 CORS(app, resources={r"/*": {"origins": "http://57.129.44.194:3001"}})
 socketio = SocketIO(app, cors_allowed_origins=["http://57.129.44.194:3001"], async_mode="eventlet")
 
-def load_json(file_path):
+def load_json(file_path, default):
     with file_lock:
         try:
             with open(file_path, "r") as f:
+                log.info(f"{file_path} loaded.")
                 return json.load(f)
         except Exception as e:
             log.error(f"Unable to read {file_path}: {e}")
-            return {}
+            return default
 
 def save_json(file_path, data):
     with file_lock:
         try:
             with open(file_path, "w") as f:
                 json.dump(data, f, indent=4)
-            log.info(f"{file_path} updated.")
+            log.info(f"{file_path} saved.")
         except Exception as e:
             log.error(f"Unable to write {file_path}: {e}")
 
 ROOMS_HIST_FILE = "db/rooms_hist.json"
 ROOMS_FILE = "db/rooms.json"
 PLAYERS_FILE = "db/players.json"
-SIDNAME_FILE = "db/sid_name.json"
+SIDNAME_FILE = "db/sid_pid.json"
 AVATAR_DIR = "db/avatars"
 
-file_lock = threading.Lock()
-rooms = {}
-save_json(ROOMS_FILE, rooms)
-sid_name = load_json(SIDNAME_FILE)
+file_lock = Semaphore(1)
 avatars = [f for f in os.listdir(AVATAR_DIR) if f.endswith(".svg")]
-save_json(SIDNAME_FILE, {})
+rooms = {}
+sid_pid = {}
+save_json(ROOMS_FILE, rooms)
+save_json(SIDNAME_FILE, sid_pid)
 
 def get_random_avatar():
     return random.choice(avatars)
 
-def save_room(room_data):
-    with file_lock:
-        try:
-            if os.path.exists(ROOMS_HIST_FILE):
-                with open(ROOMS_HIST_FILE, "r") as f:
-                    history = json.load(f)
-            else:
-                history = []
-            history.append(room_data)
-            with open(ROOMS_HIST_FILE, "w") as f:
-                json.dump(history, f, indent=4)
-            log.info("Room history updated.")
-        except Exception as e:
-            log.error(f"Unable to write {ROOMS_HIST_FILE}: {e}")
+def compress(d):
+    players_list = list(d["players"].keys())
+    players = {key: {k: v for k, v in val.items() if k in ["team", "is_ai", "w", "l"]} for key, val in d["players"].items()}
+    players = {k: f"{v['team']},{v['is_ai']},{v['w']},{v['l']}".replace("True", "T").replace("False", "F") for k, v in players.items()}
+    rounds = []
+    for r in d["rounds"]:
+        steps = ["".join(s if s else " " for s in step) for step in r["steps"]]
+        rounds.append(f"{players_list.index(r['winner'])};{','.join(steps)}")
+    p = "|".join([f"{k};{v}" for k, v in players.items()])
+    r = "|".join(rounds)
+    return f"{p}${r}"
+
+def load_rooms(rids):
+    rooms_to_return = {}
+    history = load_json(ROOMS_HIST_FILE, {})
+    for rid in rids:
+        if rid in history:
+            rooms_to_return[rid] = history[rid]
+            log.info(f"Room {rid} loaded from history.")
+        else:
+            log.warning(f"Room {rid} not found in history.")
+    if rooms_to_return:
+        return rooms_to_return
+
+def save_room(rid, room_data):
+    history = load_json(ROOMS_HIST_FILE, {})
+    history[rid] = compress(room_data)
+    save_json(ROOMS_HIST_FILE, history)
+    del rooms[rid]
+    log.info("Room history updated.")
 
 # blackbox fun
 def get_result(player_move):
@@ -83,41 +101,38 @@ def get_result(player_move):
         player for player, move in player_move.items() if move in winning_moves]
 
 def emit_rooms_update():
-    current_rooms = [{
-        "rid": k,
-        "status": v["status"],
-        "wins2win": v["wins2win"],
-        "rsize": v["rsize"],
-        "nb": len(v["players"]),
-        "players": v["players"]} for k, v in rooms.items()]
-    socketio.emit("rooms_updated", {"d": {"rooms": current_rooms}})
+    socketio.emit("rooms_updated", {"rooms": rooms})
     save_json(ROOMS_FILE, rooms)
 
-def clean_room_from_player(rid, name):
-    if rid in rooms:
-        room = rooms[rid]
-        if name in room["players"]:
-            del room["players"][name]
-            leave_room(rid)
-            log.info(f"Player {name} left room {rid}")
-            if room["status"] != "waiting" and all(v["is_ai"] for v in room["players"].values()):
-                del rooms[rid]
-                log.info(f"Deleted room {rid} due to insufficient players.")
-            elif room["status"] == "waiting" and len(room["players"]) == 0:
-                del rooms[rid]
-                log.info(f"Deleted empty room {rid}.")
-        else:
-            log.warning(f"Player {name} tried to leave room {rid}, but is not a participant.")
-    else:
+def clean_room_from_player(rid, pid):
+    if rid not in rooms:
         log.warning(f"Room {rid} does not exist.")
+        return
+    
+    room = rooms[rid]
+    if pid not in room["players"]:
+        log.warning(f"Player with pid: {pid} is not in room {rid}.")
+        return
 
-def clean_rooms_from_player(name):
+    name = room["players"][pid]["name"]
+    del room["players"][pid]
+    leave_room(rid)
+    log.info(f"Player {name} (pid: {pid}) left room {rid}")
+    if room["status"] != "waiting" and all(v["is_ai"] for v in room["players"].values()):
+        del rooms[rid]
+        log.info(f"Deleted room {rid} due to insufficient players.")
+    elif room["status"] == "waiting" and len(room["players"]) == 0:
+        del rooms[rid]
+        log.info(f"Deleted empty room {rid}.")
+
+def clean_rooms_from_player(pid):
     rooms_to_delete = []
     for rid, room in rooms.items():
-        if name in room["players"]:
-            del room["players"][name]
+        if pid in room["players"]:
+            name = room["players"][pid]["name"]
+            del room["players"][pid]
             leave_room(rid)
-            log.info(f"Player {name} left room {rid}")
+            log.info(f"Player {name} (pid: {pid}) left room {rid}")
             if room["status"] != "waiting" and all(v["is_ai"] for v in room["players"].values()):
                 rooms_to_delete.append(rid)
             elif room["status"] == "waiting" and len(room["players"]) == 0:
@@ -128,7 +143,7 @@ def clean_rooms_from_player(name):
         log.info(f"Deleted room {rid}.")
 
 def get_player_room(sid):
-    name = sid_name.get(sid)
+    pid = sid_pid.get(sid)
     if not name:
         return None
     for rid, room_info in rooms.items():
@@ -136,18 +151,47 @@ def get_player_room(sid):
             return rid
     return None
 
+def generate_random_name():
+    adjectives = ["Brave", "Clever", "Swift", "Mighty", "Bold"]
+    animals = ["Tiger", "Falcon", "Wolf", "Eagle", "Lion"]
+    return f"{random.choice(adjectives)}-{random.choice(animals)}-{random.randint(1000, 9999)}"
+
+def check_pid(sid, pid, ep):
+    if pid:
+        return True
+    socketio.emit("warning", {"message": f"Your pid is not registered. To debug, please try 1)reload page 2)empty cache 3)connect from another device 4)pray 5)call the BOSS"}, room=sid)
+    log.warning(f"[Endpoint: {ep}] Player (sid: {sid}) don't have a valid pid.")
+
+def check_rid(sid, pid, rid, ep):
+    if rid in rooms:
+        return True
+    socketio.emit("warning", {"message": f"Room {rid} not found"}, room=sid)
+    log.warning(f"[Endpoint: {ep}] Player (sid: {sid}) (pid: {pid}) tried to interact with invalid room {rid}.")
+
+def check_pid_in_room(sid, pid, rid, ep):
+    if pid in rooms[rid]["players"]:
+        return True
+    socketio.emit("warning", {"message": f"You are not in room {rid}"}, room=sid)
+    log.warning(f"[Endpoint: {ep}] Player (sid: {sid}) (pid: {pid}) tried to interact with room {rid} but is not in it.")
+
 @app.route("/avatars/batch")
 def get_all_avatars():
     try:
+        tot = len([e for e in os.listdir(AVATAR_DIR) if e.endswith(".svg")])
         avatar_data = {}
         for avatar_name in avatars:
             avatar_path = os.path.join(AVATAR_DIR, avatar_name)
-            log.info(avatar_path)
             with open(avatar_path, "r", encoding="utf-8") as f:
                 svg_content = f.read()
                 encoded_svg = base64.b64encode(svg_content.encode("utf-8")).decode("utf-8")
                 avatar_data[avatar_name] = f"data:image/svg+xml;base64,{encoded_svg}"
-        response = make_response(jsonify({"avatar_list": avatar_data}), 200)
+
+        if len(avatar_data) == tot:
+            log.info(f"Batch avatars fetched {len(avatar_data)}/{tot}")
+        else:
+            log.warning(f"Batch avatars not full, fetched {len(avatar_data)}/{tot}")
+
+        response = make_response(jsonify(avatar_data), 200)
         # response.headers["Cache-Control"] = "public, max-age=86400"
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -157,7 +201,39 @@ def get_all_avatars():
 
 @app.route("/avatars/<filename>")
 def get_avatar(filename):
-    return send_from_directory(AVATAR_DIR, filename)
+    if filename not in avatars:
+        return jsonify({"error": "Avatar not found"}), 404
+    return send_from_directory(AVATAR_DIR, filename), 200
+
+@app.route("/rooms/<string:rid>")
+def get_room(rid):
+    room_to_return = load_rooms([rid])
+
+    names = {p.split(";")[0] for v in room_to_return.values() for p in v.split("$")[0].split("|")}
+    name_data = load_json(PLAYERS_FILE, {})
+    pid_name_avatar = {k: {"name": name_data.get(k, {}).get("n"), "avatar": name_data.get(k, {}).get("a")} for k in names}
+
+    emit_data = {"pid_name_avatar": pid_name_avatar, "room_data": room_to_return}
+    if room_to_return:  # not jsonifying here to keep original order for players
+        return Response(json.dumps(emit_data), status=200, mimetype='application/json')
+    else:
+        return jsonify({"error": "Room not found"}), 404
+
+@app.route("/players/<string:pid>")
+def get_player(pid):
+    pid_player = load_json(PLAYERS_FILE, {})
+    pid_data = pid_player.get(pid)
+    pid_data["games"] = {k: v for k, v in load_json(ROOMS_HIST_FILE, {}).items() if pid in v}
+    names = {p.split(";")[0] for v in pid_data["games"].values() for p in v.split("$")[0].split("|")}
+    log.info(f"Names: {names}")
+    name_data = load_json(PLAYERS_FILE, {})
+    pid_name_avatar = {k: {"name": name_data.get(k, {}).get("n"), "avatar": name_data.get(k, {}).get("a")} for k in names}
+
+    emit_data = {"pid_name_avatar": pid_name_avatar, "pid_data": pid_data}
+    if pid_data:  # not jsonifying here to keep original order for players
+        return Response(json.dumps(emit_data), status=200, mimetype='application/json')
+    else:
+        return jsonify({"error": "Player not found"}), 404
 
  ######   #######   ######  ##    ## ######## ######## ####  ####### 
 ##    ## ##     ## ##    ## ##   ##  ##          ##     ##  ##     ##
@@ -171,213 +247,242 @@ def get_avatar(filename):
 def handle_connect():
     sid = request.sid
     log.info(f"User connected: {sid}")
-    players = [{"n": k, **v} for k, v in load_json(PLAYERS_FILE).items()]
-    socketio.emit("players_updated", {"d": {"players": players}}, room=sid)
-    log.info(f"Sent players to {sid}")
+    leaderboard = list({k: {**v, "pid": k} for k, v in load_json(PLAYERS_FILE, {}).items()}.values())
+    socketio.emit("leaderboard_updated", {"leaderboard": leaderboard}, room=sid)
+    log.info(f"Sent leaderboard to {sid}")
 
-@socketio.on("set_name")
-def handle_set_name(data):
-    name = data.get("name").strip()
+@socketio.on("set_pid")
+def handle_set_pid(data):
+    pid = data.get("pid")
     sid = request.sid
-    players = load_json(PLAYERS_FILE)
-    avatar = players.get(name, {}).get("avatar", get_random_avatar())
-    if name not in players:
-        players[name] = {"avatar": avatar, "r": 0.0, "w": 0, "l": 0}
-        log.info(f"New player {name} added to players database.")
-        save_json(PLAYERS_FILE, players)
-    sid_name[sid] = name
-    save_json(SIDNAME_FILE, sid_name)
-    socketio.emit("name_set", {"d": {"avatar": avatar}}, room=sid)
+    pid_player = load_json(PLAYERS_FILE, {})
+    name = pid_player.get(pid, {}).get("n") or generate_random_name()
+    avatar = pid_player.get(pid, {}).get("a") or get_random_avatar()
+    if pid not in pid_player:
+        pid_player[pid] = {"n": name, "a": avatar, "r": 0.0, "w": 0, "l": 0}
+        log.info(f"New player {name} (pid: {pid}) added to db/players.json.")
+        save_json(PLAYERS_FILE, pid_player)
+    sid_pid[sid] = pid
+    save_json(SIDNAME_FILE, sid_pid)
+    socketio.emit("pid_set", {"pid": pid, "name": name, "avatar": avatar}, room=sid)
 
 @socketio.on("edit_name")
 def handle_edit_name(data):
-    new_name = data.get("new_name").strip()
-    old_name = sid_name.get(request.sid)
+    ep = "edit_name"
     sid = request.sid
-    if new_name in sid_name.values():
-        socketio.emit("name_taken", room=sid)
+    pid = sid_pid.get(sid)
+    if not check_pid(sid, pid, ep):
         return
-    players = load_json(PLAYERS_FILE)
-    players[new_name] = players.pop(old_name)
-    save_json(PLAYERS_FILE, players)
-    sid_name[sid] = new_name
-    save_json(SIDNAME_FILE, sid_name)
-    log.info(f"Player {old_name} updated to {new_name} in players database.")
+
+    old_name = data.get("old_name").strip()
+    new_name = data.get("new_name").strip()
+    pid_player = load_json(PLAYERS_FILE, {})
+
+    if new_name in [v["n"] for v in pid_player.values()]:
+        socketio.emit("name_taken", room=sid)
+        log.warning(f"Player {old_name} (pid: {pid}) attempted to change name to {new_name}, but it is already taken.")
+        return
+
+    pid_player[pid]["n"] = new_name
+    save_json(PLAYERS_FILE, pid_player)
+    log.info(f"Player {old_name} (pid: {pid}) updated to {new_name} in db/players.json.")
 
 @socketio.on("set_avatar")
 def handle_set_avatar(data):
+    ep = "set_avatar"
     sid = request.sid
-    name = sid_name.get(sid)
+    pid = sid_pid.get(sid)
+    if not check_pid(sid, pid, ep):
+        return
+
     avatar = data.get("avatar")
-    players = load_json(PLAYERS_FILE)
-    players[name]["avatar"] = avatar
-    save_json(PLAYERS_FILE, players)
-    if not name:
-        log.warning(f"Avatar set attempted without a valid name for SID {sid}.")
-        return
+    pid_player = load_json(PLAYERS_FILE, {})
+    name = pid_player.get(pid, {}).get("n")
+
     if avatar not in avatars:
-        log.warning(f"Invalid avatar selection {avatar} by user {name}.")
-        socketio.emit("error", {"message": "Selected avatar does not exist."}, room=sid)
+        socketio.emit("warning", {"message": "Invalid avatar"}, room=sid)
+        log.warning(f"Player {name} (pid: {pid}) attempted to set invalid avatar {avatar}.")
         return
+
+    pid_player[pid]["a"] = avatar
+    save_json(PLAYERS_FILE, pid_player)
+
     for room in rooms.values():
-        if name in room["players"]:
-            room["players"][name]["avatar"] = avatar
-            log.info(f"User {name} changed avatar to {avatar} in room {room}.")
+        if pid in room["players"]:
+            room["players"][pid]["avatar"] = avatar
+            log.info(f"Player {name} (pid: {pid}) changed avatar to {avatar} in room {room}.")
             break
-    socketio.emit("avatar_set", {"d": {"avatar": avatar}}, room=sid)
+    socketio.emit("avatar_set", {"avatar": avatar}, room=sid)
 
 @socketio.on("create_room")
 def handle_create_room(data):
+    ep = "create_room"
+    sid = request.sid
+    pid = sid_pid.get(sid)
+    if not check_pid(sid, pid, ep):
+        return
+
     mode = data.get("mode", "online")
     wins2win = data.get("wins2win", 2)
     wins2win = max(1, min(5, wins2win))
     rsize = data.get("rsize", 2)
     rsize = max(2, min(5, rsize))
-    sid = request.sid
-    name = sid_name.get(sid)
-    clean_rooms_from_player(name)
-    avatar = load_json(PLAYERS_FILE).get(name, {}).get("avatar")
-    rid = ''.join(random.choices(string.ascii_letters + string.digits, k=15))
+    clean_rooms_from_player(pid)
+    pid_player = load_json(PLAYERS_FILE, {})
+    name = pid_player.get(pid, {}).get("n")
+    avatar = pid_player.get(pid, {}).get("a")
+    rid = "".join(random.choices(string.ascii_letters + string.digits, k=15))
     if mode == "ai":
         rooms[rid] = {"status": "running", "wins2win": wins2win, "rsize": rsize,
             "players": {
-                name: {"avatar": avatar, "team": 1, "is_ai": False, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0},
-                "AI1": {"avatar": "ai.svg", "team": 2, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}},
+                pid: {"name": name, "avatar": avatar, "team": 1, "is_ai": False, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0},
+                "AI1": {"name": "AI1", "avatar": "ai.svg", "team": 2, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}},
             "rounds": [{"index": 1, "steps": [], "winner": None}]}
         join_room(rid)
-        players = [{"name": k, "avatar": v["avatar"]} for k, v in rooms[rid]["players"].items()]
-        emit_data = {"rid": rid, "players": players}
-        socketio.emit("game_start", {"d": emit_data}, room=rid)
-        log.info(f"Player {name} created new room {rid}")
-        log.info(f"AI joined room {rid}. Room is now running.")
+        socketio.emit("game_start", {"rid": rid}, room=rid)
+        log.info(f"Player {name} (pid: {pid}) created new room {rid}")
+        log.info(f"AI1 joined room {rid}. Room is now running.")
     else:
         rooms[rid] = {"status": "waiting", "wins2win": wins2win, "rsize": rsize,
             "players": {
-                name: {"avatar": avatar, "team": 1, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}},
+                pid: {"name": name, "avatar": avatar, "team": 1, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}},
             "rounds": [{"index": 1, "steps": [], "winner": None}]}
         join_room(rid)
-        players = [{"name": k, "avatar": v["avatar"]} for k, v in rooms[rid]["players"].items()]
-        emit_data = {"rid": rid, "players": players}
-        socketio.emit("room_created", {"d": emit_data}, room=rid)
-        log.info(f"Player {name} created new room {rid}")
+        socketio.emit("room_created", {"rid": rid}, room=rid)
+        log.info(f"Player {name} (pid: {pid}) created new room {rid}")
     emit_rooms_update()
 
 @socketio.on("join_room")
 def handle_join_room(data):
-    rid = data.get("room")
+    ep = "join_room"
     sid = request.sid
-    name = sid_name.get(sid)
-    clean_rooms_from_player(name)
-    avatar = load_json(PLAYERS_FILE).get(name, {}).get("avatar")
-    if rid in rooms:
-        room = rooms[rid]
-        if room["status"] == "waiting" and len(room["players"]) < room["rsize"]:
-            team = len(room["players"]) + 1
-            room["players"][name] = {"avatar": avatar, "team": team, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}
-            room["status"] = "waiting"
-            join_room(rid)
-            log.info(f"Player {name} joined room {rid}. Waiting for both players to be ready.")
-        else:
-            socketio.emit("error", {"message": "Room is not available"}, room=sid)
-            log.warning(f"Player {name} attempted to join room {rid}, but it is not available.")
-        players = [{"name": k, "avatar": v["avatar"]} for k, v in room["players"].items()]
-        emit_data = {"rid": rid, "players": players}
-        socketio.emit("room_joined", {"d": emit_data}, room=rid)
-    else:
-        socketio.emit("error", {"message": "Room does not exist"}, room=sid)
-        log.warning(f"Player {name} attempted to join non-existent room {rid}.")
+    pid = sid_pid.get(sid)
+    rid = data.get("room")
+    if not check_pid(sid, pid, ep) or not check_rid(sid, pid, rid, ep):
+        return
+
+    clean_rooms_from_player(pid)
+    pid_player = load_json(PLAYERS_FILE, {})
+    name = pid_player.get(pid, {}).get("n")
+    avatar = pid_player.get(pid, {}).get("a")
+
+    room = rooms[rid]
+    if room["status"] != "waiting":
+        socketio.emit("warning", {"message": f"Room {rid} is not available"}, room=sid)
+        log.warning(f"Player {name} (pid: {pid}) attempted to join room {rid}, but it is not available.")
+        return
+    
+    if room["rsize"] <= len(room["players"]):
+        socketio.emit("warning", {"message": f"Room {rid} is full"}, room=sid)
+        log.warning(f"Player {name} (pid: {pid}) attempted to join room {rid}, but it is full.")
+        return
+
+    team = len(room["players"]) + 1
+    room["players"][pid] = {"name": name, "avatar": avatar, "team": team, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}
+    room["status"] = "waiting"
+    join_room(rid)
+    log.info(f"Player {name} (pid: {pid}) joined room {rid}. Waiting for both players to be ready.")
+    socketio.emit("room_joined", {"rid": rid}, room=rid)
     emit_rooms_update()
 
 @socketio.on("update_room")
 def handle_update_room(data):
-    rid = data.get("room")
+    ep = "update_room"
     sid = request.sid
-    name = sid_name.get(sid)
+    pid = sid_pid.get(sid)
+    rid = data.get("room")
+    if not check_pid(sid, pid, ep) or not check_rid(sid, pid, rid ,ep) or not check_pid_in_room(sid, pid, rid, ep):
+        return
+
     update_label = "wins2win" if "wins2win" in data else "rsize"
-    if rid in rooms and name in rooms[rid]["players"]:
-        update = data.get(update_label)
-        rooms[rid][update_label] = update
-        log.info(f"Player {name} updated {update_label} to {update} in room {rid}.")
-        emit_data = {update_label: update}
-        socketio.emit("room_updated", {"d": emit_data}, room=rid)
-        emit_rooms_update()
-    else:
-        socketio.emit("error", {"message": "Invalid room or player"}, room=sid)
-        log.warning(f"Player {name} attempted to update room data in invalid room {rid}.")
+    update = data.get(update_label)
+
+    if update_label == "wins2win" and not 2 <= rooms[rid]["wins2win"] + update <= 5:
+        socketio.emit("warning", {"message": "Invalid wins to win"}, room=sid)
+        log.warning(f"Player (pid: {pid}) attempted to set invalid wins to win in room {rid}.")
+        return
+    
+    if update_label == "rsize" and not 2 <= rooms[rid]["rsize"] + update <= 5:
+        socketio.emit("warning", {"message": "Invalid room size"}, room=sid)
+        log.warning(f"Player (pid: {pid}) attempted to set invalid room size in room {rid}.")
+        return
+
+    rooms[rid][update_label] += update
+    log.info(f"Player (pid: {pid}) updated {update_label} to {rooms[rid][update_label]} in room {rid}.")
+    socketio.emit("room_updated", {update_label: rooms[rid][update_label]}, room=rid)
+    emit_rooms_update()
 
 @socketio.on("manage_ais")
 def handle_manage_ais(data):
-    rid = data.get("room")
-    ai_dif = data.get("ai_dif")
+    ep = "manage_ais"
     sid = request.sid
-    name = sid_name.get(sid)
-    if rid in rooms and name in rooms[rid]["players"]:
-        players = rooms[rid]["players"]
-        ais = [k for k, v in players.items() if v["is_ai"]]
-        if ai_dif == 1 and len(players) < 5:
-            players[f"AI{len(ais) + 1}"] = {"avatar": "ai.svg", "team": len(players) + 1, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}
-            log.info(f"AI added to room {rid}.")
-        elif ai_dif == -1 and len(ais):
-            del players[ais[-1]]
-            log.info(f"AI removed from room {rid}.")
-    else:
-        socketio.emit("error", {"message": "Invalid room or player"}, room=sid)
-        log.warning(f"Player {name} attempted to manage AI in invalid room {rid}.")
-    emit_rooms_update()
+    pid = sid_pid.get(sid)
+    rid = data.get("room")
+    if not check_pid(sid, pid, ep) or not check_rid(sid, pid, rid ,ep) or not check_pid_in_room(sid, pid, rid, ep):
+        return
+
+    ai_dif = data.get("ai_dif")
+    players = rooms[rid]["players"]
+    ais = [k for k, v in players.items() if v["is_ai"]]
+    if ai_dif == 1 and len(players) < 5:
+        aiid = f"AI{len(ais) + 1}"
+        players[aiid] = {"name": aiid, "avatar": "ai.svg", "team": len(players) + 1, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}
+        log.info(f"{aiid} added to room {rid}.")
+        emit_rooms_update()
+    elif ai_dif == -1 and len(ais):
+        aiid = ais[-1]
+        del players[ais[-1]]
+        log.info(f"{aiid} removed from room {rid}.")
+        emit_rooms_update()
 
 @socketio.on("player_ready")
 def handle_player_ready(data):
-    rid = data.get("room")
-    status = data.get("status")
+    ep = "player_ready"
     sid = request.sid
-    name = sid_name.get(sid)
+    pid = sid_pid.get(sid)
+    rid = data.get("room")
+    if not check_pid(sid, pid, ep) or not check_rid(sid, pid, rid ,ep) or not check_pid_in_room(sid, pid, rid, ep):
+        return
 
-    if rid in rooms and name in rooms[rid]["players"]:
-        rooms[rid]["players"][name]["status"] = status
-        log.info(f"Player {name} in room {rid} is {status}.")
+    status = data.get("status")
+    rooms[rid]["players"][pid]["status"] = status
+    log.info(f"Player (pid: {pid}) in room {rid} is {status}.")
 
-        all_ready = all(p["status"] == "ready" for p in rooms[rid]["players"].values())
-        if all_ready and len(rooms[rid]["players"]) == rooms[rid]["rsize"]:
-            rooms[rid]["status"] = "running"
-            players = [{"name": k, "avatar": v["avatar"]} for k, v in rooms[rid]["players"].items()]
-            emit_data = {"rid": rid, "players": players}
-            socketio.emit("game_start", {"d": emit_data}, room=rid)
-            log.info(f"Game started in room {rid}.")
-
-        emit_rooms_update()
-    else:
-        socketio.emit("error", {"message": "Invalid room or player"}, room=sid)
-        log.warning(f"Player {name} attempted to set ready in invalid room {rid}.")
+    all_ready = all(p["status"] == "ready" for p in rooms[rid]["players"].values())
+    if all_ready and len(rooms[rid]["players"]) == rooms[rid]["rsize"]:
+        rooms[rid]["status"] = "running"
+        socketio.emit("game_start", {"rid": rid}, room=rid)
+        log.info(f"Game started in room {rid}.")
+    emit_rooms_update()
 
 @socketio.on("make_move")
 def handle_make_move(data):
-    rid = data.get("room")
-    move = data.get("move")
+    ep = "make_move"
     sid = request.sid
-    name = sid_name.get(sid)
-    log.info(f"Player {name} in room {rid} made move: {move}")
-
-    if rid not in rooms:
-        socketio.emit("error", {"message": "Invalid room ID"}, room=sid)
-        log.warning(f"Invalid room {rid} by {name}")
-        emit_rooms_update()
+    pid = sid_pid.get(sid)
+    rid = data.get("room")
+    if not check_pid(sid, pid, ep) or not check_rid(sid, pid, rid ,ep) or not check_pid_in_room(sid, pid, rid, ep):
         return
 
     room = rooms[rid]
-
-    if room["status"] != "running" or name not in room["players"]:
-        socketio.emit("error", {"message": "You are not in this room or game hasn't started"}, room=sid)
-        log.warning(f"Player {name} tried to make a move in room {rid}, but is not a participant or game not started.")
-        emit_rooms_update()
+    if room["status"] != "running":
+        socketio.emit("warning", {"message": "Game is not running"}, room=sid)
+        log.warning(f"Player (pid: {pid}) tried to make a move in room {rid}, but game is not running.")
+        return
+    
+    if pid not in room["players"]:
+        socketio.emit("warning", {"message": "You are not in this room"}, room=sid)
+        log.warning(f"Player (pid: {pid}) tried to make a move in room {rid}, but is not a participant.")
         return
 
-    for k, v in room["players"].items():
-        if v["is_ai"]:
-            ai_move = random.choice(["R", "P", "S"])
-            room["players"][k]["cmove"] = ai_move
-            log.info(f"{k} made move: {ai_move}")
+    move = data.get("move")
+    log.info(f"Player (pid: {pid}) in room {rid} made move: {move}")
+    for aiid in {k for k, v in room["players"].items() if v["is_ai"]}:
+        ai_move = random.choice(["R", "P", "S"])
+        room["players"][aiid]["cmove"] = ai_move
+        log.info(f"{aiid} made move: {ai_move}")
 
-    room["players"][name]["cmove"] = move
+    room["players"][pid]["cmove"] = move
 
     player_move = {k: v["cmove"] for k, v in room["players"].items() if v["on"]}
     if all(player_move.values()):
@@ -385,15 +490,15 @@ def handle_make_move(data):
         step = [v["cmove"] if v["on"] else "" for v in room["players"].values()]
         room["rounds"][-1]["steps"].append(step)
 
-        for p, v in room["players"].items():
-            v["on"] = p in cplayers
+        for k, v in room["players"].items():
+            v["on"] = k in cplayers
             v["cmove"] = None
 
         # new step
         if 1 < len(cplayers):
             if not all(v["is_ai"] for k, v in room["players"].items() if k in cplayers):
-                emit_data = {"game_over": False, "winner": None, "rounds": room["rounds"]}
-                socketio.emit("game_result", {"d": emit_data}, room=rid)
+                emit_data = {"rid": rid, "game_over": False, "winner": None, "rounds": room["rounds"]}
+                socketio.emit("game_result", emit_data, room=rid)
                 log.info(f"New step in room {rid}. Remaining players: {cplayers}")
                 emit_rooms_update()
                 return
@@ -409,24 +514,24 @@ def handle_make_move(data):
                     step = [v["cmove"] if v["on"] else "" for v in room["players"].values()]
                     room["rounds"][-1]["steps"].append(step)
 
-                    for p, v in room["players"].items():
-                        v["on"] = p in cplayers
+                    for k, v in room["players"].items():
+                        v["on"] = k in cplayers
                         v["cmove"] = None
 
         cwinner = cplayers[0]
         room["rounds"][-1]["winner"] = cwinner
         room["players"][cwinner]["w"] += 1
-        for p in room["players"]:
-            if p != cwinner:
-                room["players"][p]["l"] += 1
+        for k in room["players"]:
+            if k != cwinner:
+                room["players"][k]["l"] += 1
 
         # new round
         if room["players"][cwinner]["w"] != room["wins2win"]:
-            for p, v in room["players"].items():
+            for v in room["players"].values():
                 v["on"] = True
             room["rounds"].append({"index": len(room["rounds"]) + 1, "steps": [], "winner": None})
-            emit_data = {"game_over": False, "winner": None, "rounds": room["rounds"]}
-            socketio.emit("game_result", {"d": emit_data}, room=rid)
+            emit_data = {"rid": rid, "game_over": False, "winner": cwinner, "rounds": room["rounds"]}
+            socketio.emit("game_result", emit_data, room=rid)
             log.info(f"New round in room {rid}. Current status: {room['players'][cwinner]['w']} wins.")
 
         # game over
@@ -436,49 +541,49 @@ def handle_make_move(data):
             room["winner"] = winner
             log.info(f"Game over in room {rid}. Winner: {winner}")
 
-            players = load_json(PLAYERS_FILE)
-            for p in (k for k, v in room["players"].items() if not v["is_ai"]):
-                players[p]["w"] += room["players"][p]["w"]
-                players[p]["l"] += room["players"][p]["l"]
-                tot = players[p]["w"] + players[p]["l"]
-                players[p]["r"] = (players[p]["w"] / tot) * 100 if tot > 0 else 0.0
+            pid_player = load_json(PLAYERS_FILE, {})
+            for k in room["players"]:
+                pid_player[k]["w"] += room["players"][k]["w"]
+                pid_player[k]["l"] += room["players"][k]["l"]
+                tot = pid_player[k]["w"] + pid_player[k]["l"]
+                pid_player[k]["r"] = round((pid_player[k]["w"] / tot) * 100, 2) if tot > 0 else 0.0
+            save_json(PLAYERS_FILE, pid_player)
+            leaderboard = list({k: {**v, "pid": k} for k, v in pid_player.items()}.values())
+            socketio.emit("leaderboard_updated", {"leaderboard": leaderboard})
 
-            save_json(PLAYERS_FILE, players)
-            players = [{"n": k, **v} for k, v in players.items()]
-            socketio.emit("players_updated", {"d": {"players": players}})
-
-            emit_data = {"game_over": True, "winner": winner, "rounds": room["rounds"]}
-            socketio.emit("game_result", {"d": emit_data}, room=rid)
-
-            save_room(room)
+            emit_data = {"rid": rid, "game_over": True, "winner": winner, "rounds": room["rounds"]}
+            socketio.emit("game_result", emit_data, room=rid)
+            save_room(rid, room)
             log.info(f"Room {rid} data saved and removed from active rooms.")
 
     emit_rooms_update()
 
 @socketio.on("quit_game")
 def handle_quit_game(data):
-    rid = data.get("room")
+    ep = "quit_game"
     sid = request.sid
-    name = sid_name.get(sid)
-    if rid in rooms:
-        players = [{"name": k, "avatar": v["avatar"]} for k, v in rooms[rid]["players"].items()]
-        emit_data = {"player": name, "players": players}
-        socketio.emit("player_left", {"d": emit_data}, room=rid)
-    clean_room_from_player(rid, name)
+    pid = sid_pid.get(sid)
+    rid = data.get("room")
+    if not check_pid(sid, pid, ep) or not check_rid(sid, pid, rid ,ep) or not check_pid_in_room(sid, pid, rid, ep):
+        return
+
+    socketio.emit("player_left", {"pid": pid}, room=rid)
+    clean_room_from_player(rid, pid)
     emit_rooms_update()
 
 @socketio.on("disconnect")
 def handle_disconnect():
     sid = request.sid
-    name = sid_name.pop(sid, None)
-    save_json(SIDNAME_FILE, sid_name)
+    pid = sid_pid.pop(sid, None)
+    save_json(SIDNAME_FILE, sid_pid)
 
-    if name:
-        log.info(f"Client disconnected: SID={sid}, Name={name}")
-        clean_rooms_from_player(name)
-        emit_rooms_update()
-    else:
-        log.warning(f"SID {sid} disconnected but was not found in sid_name.")
+    if not pid:
+        log.warning(f"Player (sid: {sid}) (pid: {pid}) disconnected but was not found in sid_pid.")
+        return
+
+    log.info(f"Client disconnected (sid: {sid}) (pid: {pid})")
+    clean_rooms_from_player(pid)
+    emit_rooms_update()
 
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=5001, debug=app.config["DEBUG"])

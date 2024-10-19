@@ -144,9 +144,7 @@ body {
 }
 
 .table_container {
-  /* flex: 1 1; */
   overflow-y: auto;
-  overflow-x: hidden;
   margin: 1vh;
   max-width: 95vw;
   border: 2px solid #BBB;
@@ -216,6 +214,10 @@ tr:nth-child(odd) td {
 
 .rounds_table {
   text-align: center;
+}
+
+.player_table td{
+  text-align: right;
 }
 
 /* STUFF */
