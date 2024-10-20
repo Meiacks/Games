@@ -35,10 +35,10 @@ function App() {
   const [leaderboard, setLeaderboard] = useState([]);
   
   const [rooms, setRooms] = useState({});
-  const [specPlayerData, setSpecPlayerData] = useState({});
-  const [specRoomData, setSpecRoomData] = useState({});
   const [avatarList, setAvatarList] = useState({});
-  const [pidNameAvatar, setPidNameAvatar] = useState({});
+  const [roomsData, setRoomsData] = useState({});
+  const [playersData, setPlayersData] = useState({});
+  const [specRoomsData, setSpecRoomsData] = useState({});
 
   const [wins2win, setWins2win] = useState(2);
   const [roomSize, setRoomSize] = useState(2);
@@ -84,6 +84,16 @@ function App() {
       .then(r => r.json())
       .then(d => {setAvatarList(d)})
       .catch(e => {console.error("Error fetching avatars/batch:", e)});
+
+    fetch(`${SOCKET_SERVER_URL}/rooms/batch`)
+      .then(r => r.json())
+      .then(d => {setRoomsData(d)})
+      .catch(e => {console.error("Error fetching rooms/batch:", e)});
+
+    fetch(`${SOCKET_SERVER_URL}/players/batch`)
+      .then(r => r.json())
+      .then(d => {setPlayersData(d)})
+      .catch(e => {console.error("Error fetching players/batch:", e)});
 
     newSocket.on("leaderboard_updated", d => setLeaderboard(d.leaderboard));
 
@@ -207,6 +217,10 @@ function App() {
   useEffect(() => {
     nameRef.current = name;
   }, [name]);
+
+  useEffect(() => {
+    setSpecRoomsData(Object.fromEntries(Object.entries(roomsData).filter(([k, v]) => Object.keys(v.players).includes(specPlayerId))));
+  }, [specPlayerId]);
 
   const generatePid = () => {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -391,160 +405,120 @@ function App() {
     }
   }, [rounds]);
 
-  useEffect(() => {
-    if (specRoomId && !specRoomData[specRoomId]) {
-      fetch(`${SOCKET_SERVER_URL}/rooms/${specRoomId}`)
-        .then(r => r.json())
-        .then(d => {
-          setPidNameAvatar(prev => ({...prev, ...d.pid_name_avatar}));
-          setSpecRoomData(prev => ({...prev, ...d.room_data}));
-        })
-        .catch(e => { console.error(`Error fetching rooms/${specRoomId}:`, e) });
-    }
-  }, [specRoomId]);
-    
-  useEffect(() => {
-    if (specPlayerId && !specPlayerData[specPlayerId]) {
-      fetch(`${SOCKET_SERVER_URL}/players/${specPlayerId}`)
-        .then(r => r.json())
-        .then(d => {
-          setPidNameAvatar(prev => ({...prev, ...d.pid_name_avatar}));
-          setSpecPlayerData(prev => ({...prev, ...d.pid_data}));
-          setSpecRoomData(prev => ({ ...prev, ...d.room_data }));
-        })
-        .catch(e => { console.error(`Error fetching players/${specPlayerId}:`, e) });
-    }
-  }, [specPlayerId]);
-
   const quitGameOver = () => {
     setGameState("main");
     setSpecRoomId(null);
   };
 
-  const decompress = d => {
-    const [playersData, roundsData] = d.split("$");
-    const players = playersData.split("|").reduce((acc, p) => {
-      const [playerId, data] = p.split(";");
-      const [team, is_ai_str, w_str, l_str] = data.split(",");
-      acc[playerId] = {team: team, is_ai: is_ai_str === "T", w: parseInt(w_str, 10), l: parseInt(l_str, 10)};
-      return acc;
-    }, {});
-    const playersList = Object.keys(players);
-    const rounds = roundsData.split("|").map((r, index) => {
-      const [winnerIndexStr, stepsStr] = r.split(";");
-      const winnerIndex = parseInt(winnerIndexStr, 10);
-      const winner = playersList[winnerIndex];
-      const steps = stepsStr.split(",").map(step => step.split("").map(ch => ch === " " ? "" : ch));
-      return {index: index + 1, winner: winner, steps: steps};
-    });
-    return {players: players, rounds: rounds};
-  };
-
   const renderRoomTable = () => {
     let room = rooms[roomId]
-    room = specRoomData?.[specRoomId] ? decompress(specRoomData[specRoomId]) : room;
+    room = roomsData?.[specRoomId] || room;
     if (!room || !room.players || !room.rounds) {
       return <div className="text_display">Loading...</div>;
     }
     const highestScore = Math.max(...Object.values(room.players).map(p => p.w));
-    return (<>
-      <div className="main_container">
-        <div className="table_menu_container">
-          <div className="table_container">
-            <table className="rounds_table">
-              <thead>
-                <tr>
-                  <th>R</th>
-                  {Object.entries(room.players).map(([k, v], i) => (
-                    <th key={i}>
-                      <div className="circle_wrapper"
-                        style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
-                        <img src={avatarList[v.avatar || pidNameAvatar[k].avatar]} alt={`${k}'s avatar`} />
-                      </div>
-                    </th>
-                  ))}
-                  <th>Winner</th>
-                </tr>
-              </thead>
-              <tbody>
-                {room.rounds.map((r, i) => (
-                  <React.Fragment key={i}>
-                    {r.steps.map((step, j) => (
-                      <tr key={`${i}-${j}`}>
-                        <td>{`${i + 1}.${j + 1}`}</td>
-                        {step.map((move, k) => (
-                          <td key={k}>
-                            {move === "R" ? "✊" : move === "P" ? "✋" : move === "S" ? "✌️" : ""}
-                          </td>
-                        ))}
-                        <td className={r.winner === pid ? "win" : "lose"}>
-                          {j === r.steps.length - 1 ? room.players[r.winner]?.name || pidNameAvatar[r.winner]?.name : ""}
-                        </td>
-                      </tr>
+    return (
+      <div className="table_container">
+        <table className="rounds_table">
+          <thead>
+            <tr>
+              <th>R</th>
+              {Object.entries(room.players).map(([k, v], i) => (
+                <th key={i}>
+                  <div className="circle_wrapper"
+                    style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
+                    <img src={avatarList[v.a || playersData[k].a]} alt={`${k}'s avatar`} />
+                  </div>
+                </th>
+              ))}
+              <th>Winner</th>
+            </tr>
+          </thead>
+          <tbody>
+            {room.rounds.map((r, i) => (
+              <React.Fragment key={i}>
+                {r.steps.map((step, j) => (
+                  <tr key={`${i}-${j}`}>
+                    <td>{`${i + 1}.${j + 1}`}</td>
+                    {step.map((move, k) => (
+                      <td key={k}>
+                        {move === "R" ? "✊" : move === "P" ? "✋" : move === "S" ? "✌️" : ""}
+                      </td>
                     ))}
-                  </React.Fragment>
+                    <td className={r.winner === pid ? "win" : "lose"}>
+                      {j === r.steps.length - 1 ? room.players[r.winner]?.n || playersData[r.winner]?.n : ""}
+                    </td>
+                  </tr>
                 ))}
-                <tr ref={tableEndRef}>
-                  <td></td>
-                  {Object.values(room.players).map((p, i) => (
-                    <td key={i} className={p.w === highestScore ? "win" : "lose"}>{p.w}</td>
-                  ))}
-                  <td></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+              </React.Fragment>
+            ))}
+            <tr ref={tableEndRef}>
+              <td></td>
+              {Object.values(room.players).map((p, i) => (
+                <td key={i} className={p.w === highestScore ? "win" : "lose"}>{p.w}</td>
+              ))}
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <div className="footer_container">
-        <div className="button_container">
-          <button className="button" onClick={() => setSpecRoomId(null)} style={{ cursor: "pointer" }}>Back</button>
-        </div>
-      </div>
-    </>);
+    )
   };
 
+  const renderRoomData = (<>
+    <div className="main_container">
+      <div className="table_menu_container">
+        {renderRoomTable()}
+      </div>
+    </div>
+    <div className="footer_container">
+      <div className="button_container">
+        <button className="button" onClick={() => setSpecRoomId(null)} style={{ cursor: "pointer" }}>Back</button>
+      </div>
+    </div>
+  </>)
+
   const renderPlayerData = () => {
-    if (!specPlayerId || !specPlayerData) {
+    if (!specPlayerId || !playersData?.[specPlayerId] || !specRoomsData) {
       return <div className="text_display">Loading...</div>;
     }
-    const specGames = Object.fromEntries(
-      Object.entries(specPlayerData?.games || {}).map(([k, v]) => [k, decompress(v)])
-    );
-    const maxLen = Math.max(0, ...Object.values(specGames).map(g => Object.keys(g.players).length));
+    const specPlayer = playersData[specPlayerId];
+    const maxLen = Math.max(0, ...Object.values(specRoomsData).map(g => Object.keys(g.players || {}).length));
     return (<>
       <div className="main_container">
-        {!specPlayerData?.a ? (<div className="text_display">Loading...</div>) : (
+        {!specPlayer?.a ? (<div className="text_display">Loading...</div>) : (
           <div className="table_menu_container">
             <div className="button_container">
               <div className="circle_wrapper" style={{ border: `2px solid ${colors[0]}` }}>
-                <img src={avatarList[specPlayerData.a]} alt={`${specPlayerData.n}'s Avatar`} />
+                <img src={avatarList[specPlayer.a]} alt={`${specPlayer.n}'s Avatar`} />
               </div>
-              <div className="text_display">{specPlayerData.n}</div>
+              <div className="text_display">{specPlayer.n}</div>
             </div>
             <div className="button_container">
-              <div className="text_display">R: {specPlayerData.r}% | W: {specPlayerData.w} | L: {specPlayerData.l}</div>
+              <div className="text_display">R: {specPlayer.r}% | W: {specPlayer.w} | L: {specPlayer.l}</div>
             </div>
             <div className="table_container">
               <table className="player_table">
                 <thead>
-                  <th></th>
-                  {[...Array(maxLen)].map((_, i) => (
-                    <><th key={`P${i}`}>{i+1}</th><th key={`S${i}`}></th></>
-                  ))}
+                  <tr>
+                    <th></th>
+                    {[...Array(maxLen)].map((_, i) => (
+                      <><th key={`P${i}`}>{i+1}</th><th key={`S${i}`}></th></>
+                    ))}
+                  </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(specGames).map(([key, val], i) => {
+                  {Object.entries(specRoomsData).map(([key, val], i) => {
                     const players = Object.entries(val.players);
                     const emptyTd = maxLen - players.length;
                     return (
-                      <tr>
-                        <td onClick={() => setSpecRoomId(key)}>{i + 1} 👁️</td>
+                      <tr key={i}>
+                        <td onClick={() => setSpecRoomId(key)} style={{ cursor: "pointer" }}>{i + 1} 👁️</td>
                         {players.map(([k, v], j) => (
-                          <React.Fragment key={j}>
+                          <React.Fragment key={`${i}-${j}`}>
                             <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer", padding: "0" }}>
-                              <img className="avatar" src={avatarList[pidNameAvatar[k].avatar]}
-                                alt={`${pidNameAvatar[k].name}'s Avatar`}/>
+                              <img className="avatar" src={avatarList[playersData[k].a]}
+                                alt={`${playersData[k].n}'s Avatar`}/>
                             </td>
                             <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer" }}>{v.w}</td>
                           </React.Fragment>
@@ -561,7 +535,8 @@ function App() {
       </div>
       <div className="footer_container">
         <div className="button_container">
-          <button className="button" onClick={() => setSpecPlayerId(null)} style={{ cursor: "pointer" }}>Back</button>
+          <button className="button" style={{ cursor: "pointer" }}
+            onClick={() => { setSpecPlayerId(null); setSpecRoomsData({}) }}>Back</button>
         </div>
       </div>
     </>);
@@ -705,15 +680,15 @@ function App() {
               </thead>
               <tbody>
                 {Object.keys(rooms).filter(rid => rid !== roomId).length ? (
-                  Object.entries(rooms).filter(([rid]) => rid !== roomId).map(([rid, r]) => (<tr key={rid}>
+                  Object.entries(rooms).filter(([rid]) => rid !== roomId).map(([rid, r], i) => (<tr key={i}>
                     <td>{r.wins2win}</td>
                     <td>{r.rsize}</td>
                     <td>{r.status === "running" ? "🟢" : "🔴"}</td>
                     <td>{Object.keys(r.players).length}/{r.rsize}</td>
                     <td>
                       <ul className="player_list">
-                        {Object.entries(r.players).map(([k, v], i) => (
-                          <li key={i}>{v.status === "ready" ? "🟢" : "🔴"} {v.name}</li>
+                        {Object.values(r.players).map((v, j) => (
+                          <li key={`${i}-${j}`}>{v.status === "ready" ? "🟢" : "🔴"} {v.name}</li>
                         ))}
                       </ul>
                     </td>
@@ -828,7 +803,7 @@ function App() {
 
   return (
     <div className="app">
-      {!pid ? (<div className="text_display">Loading...</div>) : (
+      {!pid ? (<div className="text_display" style={{ paddingTop: "2.5vh" }}>Loading...</div>) : (
         <div className="header_container">
           <div className="button_container">
             {gameState != "main" &&
@@ -849,10 +824,10 @@ function App() {
         </div>
       )}
 
-      {specRoomId ? renderRoomTable() :
-      specPlayerId ? renderPlayerData() :
-      editingAvatar ? renderEditingAvatar :
+      {editingAvatar ? renderEditingAvatar :
       displaySettings ? renderDisplaySettings :
+      specRoomId ? renderRoomData :
+      specPlayerId ? renderPlayerData() :
       displayLeaderboard ? renderLeaderboard :
       <>
         {gameState === "main" && renderMain}

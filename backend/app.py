@@ -58,33 +58,11 @@ save_json(SIDNAME_FILE, sid_pid)
 def get_random_avatar():
     return random.choice(avatars)
 
-def compress(d):
-    players_list = list(d["players"].keys())
-    players = {key: {k: v for k, v in val.items() if k in ["team", "is_ai", "w", "l"]} for key, val in d["players"].items()}
-    players = {k: f"{v['team']},{v['is_ai']},{v['w']},{v['l']}".replace("True", "T").replace("False", "F") for k, v in players.items()}
-    rounds = []
-    for r in d["rounds"]:
-        steps = ["".join(s if s else " " for s in step) for step in r["steps"]]
-        rounds.append(f"{players_list.index(r['winner'])};{','.join(steps)}")
-    p = "|".join([f"{k};{v}" for k, v in players.items()])
-    r = "|".join(rounds)
-    return f"{p}${r}"
-
-def load_rooms(rids):
-    rooms_to_return = {}
-    history = load_json(ROOMS_HIST_FILE, {})
-    for rid in rids:
-        if rid in history:
-            rooms_to_return[rid] = history[rid]
-            log.info(f"Room {rid} loaded from history.")
-        else:
-            log.warning(f"Room {rid} not found in history.")
-    if rooms_to_return:
-        return rooms_to_return
-
 def save_room(rid, room_data):
+    players = {key: {k: v[k] for k in ["team", "is_ai", "w", "l"]} for key, v in room_data["players"].items()}
+    rounds = [{"index": r["index"], "winner": r["winner"], "steps": r["steps"]} for r in room_data["rounds"]]
     history = load_json(ROOMS_HIST_FILE, {})
-    history[rid] = compress(room_data)
+    history[rid] = {"players": players, "rounds": rounds}
     save_json(ROOMS_HIST_FILE, history)
     del rooms[rid]
     log.info("Room history updated.")
@@ -207,33 +185,13 @@ def get_avatar(filename):
 
 @app.route("/rooms/<string:rid>")
 def get_room(rid):
-    room_to_return = load_rooms([rid])
-
-    names = {p.split(";")[0] for v in room_to_return.values() for p in v.split("$")[0].split("|")}
-    name_data = load_json(PLAYERS_FILE, {})
-    pid_name_avatar = {k: {"name": name_data.get(k, {}).get("n"), "avatar": name_data.get(k, {}).get("a")} for k in names}
-
-    emit_data = {"pid_name_avatar": pid_name_avatar, "room_data": room_to_return}
-    if room_to_return:  # not jsonifying here to keep original order for players
-        return Response(json.dumps(emit_data), status=200, mimetype='application/json')
-    else:
-        return jsonify({"error": "Room not found"}), 404
+    emit_data = load_json(ROOMS_HIST_FILE, {})  # not jsonifying here to keep original order for players
+    return Response(json.dumps(emit_data), status=200, mimetype='application/json')
 
 @app.route("/players/<string:pid>")
 def get_player(pid):
-    pid_player = load_json(PLAYERS_FILE, {})
-    pid_data = pid_player.get(pid)
-    pid_data["games"] = {k: v for k, v in load_json(ROOMS_HIST_FILE, {}).items() if pid in v}
-    names = {p.split(";")[0] for v in pid_data["games"].values() for p in v.split("$")[0].split("|")}
-    log.info(f"Names: {names}")
-    name_data = load_json(PLAYERS_FILE, {})
-    pid_name_avatar = {k: {"name": name_data.get(k, {}).get("n"), "avatar": name_data.get(k, {}).get("a")} for k in names}
-
-    emit_data = {"pid_name_avatar": pid_name_avatar, "pid_data": pid_data}
-    if pid_data:  # not jsonifying here to keep original order for players
-        return Response(json.dumps(emit_data), status=200, mimetype='application/json')
-    else:
-        return jsonify({"error": "Player not found"}), 404
+    emit_data = load_json(PLAYERS_FILE, {})  # not jsonifying here to keep original order for players
+    return Response(json.dumps(emit_data), status=200, mimetype='application/json')
 
  ######   #######   ######  ##    ## ######## ######## ####  ####### 
 ##    ## ##     ## ##    ## ##   ##  ##          ##     ##  ##     ##
