@@ -63,6 +63,7 @@ body {
   align-items: center;
   padding: 0.7vh;
   flex-wrap: wrap;
+  background-color: transparent;
 }
 
 .button,
@@ -87,6 +88,7 @@ body {
 
 ::-webkit-scrollbar {
   width: 1vh;
+  height: 1vh;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -94,16 +96,9 @@ body {
   border-radius: 1vh;
 }
 
-.text_input {
-  border: 2px solid #BBB;
-  border-radius: 1vh;
-  padding: 0.7vh 1vh;
-  margin: 0.3vh;
-  width: 20vh;
-  font-size: 2.1vh;
-}
+/* NOTIF */
 
-.close-btn {
+.close_btn {
   background: none;
   border: none;
   font-size: 16px;
@@ -113,8 +108,6 @@ body {
   cursor: pointer;
   color: red;
 }
-
-/* NOTIF */
 
 .notif {
   position: fixed;
@@ -276,4 +269,13 @@ tr:nth-child(odd) td {
 
 .avatar {
   background-color: transparent;
+}
+
+.text_input {
+  border: 2px solid #BBB;
+  border-radius: 1vh;
+  padding: 0.7vh 1vh;
+  margin: 0.3vh;
+  width: 20vh;
+  font-size: 2.1vh;
 }

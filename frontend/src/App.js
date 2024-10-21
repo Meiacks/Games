@@ -1,6 +1,6 @@
 // frontend/App.js
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 import { io } from "socket.io-client";
 
@@ -14,13 +14,10 @@ function App() {
   const nameRef = useRef(name);
   const [nameError, setNameError] = useState("");
 
-  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "rid", direction: "asc" });
-  const [leaderboardSortConfig, setLeaderboardSortConfig] = useState({ key: "r", direction: "desc" });
-
   const [editingName, setEditingName] = useState(false);
   const [editingAvatar, setEditingAvatar] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  const [displayLeaderboard, setDisplayLeaderboard] = useState(false);
+  const [displayLead, setDisplayLead] = useState(false);
   const [displayOthersRooms, setDisplayOthersRooms] = useState(true);
   const [displaySettings, setDisplaySettings] = useState(false);
 
@@ -32,16 +29,16 @@ function App() {
   const [avatar, setAvatar] = useState(null);
 
   const [rounds, setRounds] = useState([]);
-  const [leaderboard, setLeaderboard] = useState([]);
   
-  const [rooms, setRooms] = useState({});
-  const [avatarList, setAvatarList] = useState({});
-  const [roomsData, setRoomsData] = useState({});
-  const [playersData, setPlayersData] = useState({});
-  const [specRoomsData, setSpecRoomsData] = useState({});
+  const [leadSortConfig, setLeadSortConfig] = useState({ key: "w", direction: "desc" });
+  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "nb", direction: "asc" });
 
-  const [wins2win, setWins2win] = useState(2);
-  const [roomSize, setRoomSize] = useState(2);
+  const [avatarList, setAvatarList] = useState({});
+  const [pidPlayer, setPidPlayer] = useState({});
+  const [roomsHist, setRoomsHist] = useState({});
+  const [playerRoomsHist, setPlayerRoomsHist] = useState({});
+  const [rooms, setRooms] = useState({});
+
   const [roomRank, setRoomRank] = useState(0);
 
   const colors = ["#0AF", "#F00", "#0C3", "#DD0", "#B0D"]
@@ -55,11 +52,8 @@ function App() {
 
     newSocket.on("connect", () => {
       console.log("Connected to backend");
-      let storedPid = localStorage.getItem("pid");
-      if (!storedPid) {
-        storedPid = generatePid();
-        localStorage.setItem("pid", storedPid);
-      }
+      const storedPid = localStorage.getItem("pid") || generatePid();
+      localStorage.setItem("pid", storedPid);
       newSocket.emit("set_pid", { pid: storedPid });
     });
     
@@ -87,15 +81,13 @@ function App() {
 
     fetch(`${SOCKET_SERVER_URL}/rooms/batch`)
       .then(r => r.json())
-      .then(d => {setRoomsData(d)})
+      .then(d => {setRoomsHist(d)})
       .catch(e => {console.error("Error fetching rooms/batch:", e)});
 
     fetch(`${SOCKET_SERVER_URL}/players/batch`)
       .then(r => r.json())
-      .then(d => {setPlayersData(d)})
+      .then(d => {setPidPlayer(d)})
       .catch(e => {console.error("Error fetching players/batch:", e)});
-
-    newSocket.on("leaderboard_updated", d => setLeaderboard(d.leaderboard));
 
     newSocket.on("room_created", d => {
       setRoomId(d.rid);
@@ -109,36 +101,23 @@ function App() {
       console.log(`New player in room ${d.rid}`);
     });
 
-    newSocket.on("room_updated", d => {
-      if (d.wins2win !== undefined) {
-        setWins2win(d.wins2win);
-        console.log(`Wins to win updated to ${d.wins2win}`);
-      }
-      if (d.rsize !== undefined) {
-        setRoomSize(d.rsize);
-        console.log(`Room size updated to ${d.rsize}`);
-      }
-    });
-
     newSocket.on("game_start", d => {
       setRoomId(d.rid);
       changeGameState("running");
       console.log(`Game started in room ${d.rid}`);
     });
 
-    newSocket.on("player_left", d => {
-      if (d.player === name) {
-        console.log(`You left the room.`);
-      } else {
-        console.log(`Player ${d.player} has left the room.`);
-      }
-    });
+    newSocket.on("player_left", d =>
+      d.pid === pid
+        ? console.log(`You left room ${d.rid}.`)
+        : console.log(`Player ${d.pid} left room ${d.rid}.`)
+    );
 
     newSocket.on("game_result", d => {
       setRounds(d.rounds);
       if (d.game_over) {
         console.log(`Game over in room ${d.rid}`);
-        quitGame("game_over");
+        quitGame(false);
         setSpecRoomId(d.rid);
       } else {
         console.log(d.winner ? `Round winner: ${d.winner} in room: ${d.rid}` : `New step in room: ${d.rid}`);
@@ -146,81 +125,76 @@ function App() {
       }
     });
 
-    newSocket.on("rooms_updated", d => setRooms(d.rooms));
+    newSocket.on("db_updated", d => {
+      const handlers = { "rooms": setRooms, "rooms_hist": setRoomsHist, "players": setPidPlayer};
+      const handler = handlers[d.key];
+      if (handler) handler(d.data);
+    });
 
     newSocket.on("warning", w => {
       console.warn("Warning:", w.message || w);
-      alert(`Warning: ${w.message || "A non-critical issue occurred."}`);
+      alert(`Warning: ${w.message || "WARNING"}`);
     });
 
     newSocket.on("error", e => {
       console.error("Socket Error:", e.message || e);
-      alert(`Error: ${e.message || "An unexpected error occurred."}`);
-      quitGame("main");
+      alert(`Error: ${e.message || "ERROR"}`);
+      quitGame(true);
     });
 
-    return () => {
-      newSocket.disconnect();
-    };
+    return () => newSocket.disconnect();
   }, []);
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (socket) {
-        socket.disconnect();
-      }
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      if (socket) {
-        socket.disconnect();
-      }
-    };
-  }, [socket]);
-
-  useEffect(() => {
-    if (rooms[roomId]?.players) {
-      const rank = Object.keys(rooms[roomId]?.players).map(p => p.name).indexOf(name);
-      setRoomRank(rank !== -1 ? rank : 0);
-    }
-  }, [rooms, name]);
-
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomFromURL = urlParams.get('room');
-
-    if (roomFromURL) {
-      const handleJoinRoomFromURL = () => {
-        setRoomId(roomFromURL);
-        changeGameState("lobby"); // Ensure the game state is set to "lobby"
-        socket.emit("join_room", { room: roomFromURL });
-        console.log(`Auto-joining room from URL: ${roomFromURL}`);
-
-        // Clean up the URL after joining
-        const newURL = window.location.origin;
-        window.history.replaceState({}, document.title, newURL);
-      };
-
-      if (socket) {
-        // If socket is already connected, join the room immediately
-        if (socket.connected) {
-          handleJoinRoomFromURL();
-        } else {
-          // Wait for socket connection if it's not yet connected
-          socket.on("connect", () => handleJoinRoomFromURL());
-        }
-      }
-    }
-  }, [socket]); // Depend on the 'socket' variable
 
   useEffect(() => {
     nameRef.current = name;
   }, [name]);
 
   useEffect(() => {
-    setSpecRoomsData(Object.fromEntries(Object.entries(roomsData).filter(([k, v]) => Object.keys(v.players).includes(specPlayerId))));
+    setPlayerRoomsHist(Object.fromEntries(Object.entries(roomsHist).filter(([k, v]) => Object.keys(v.players).includes(specPlayerId))));
   }, [specPlayerId]);
+
+  useEffect(() => {
+    if (tableEndRef.current) {
+      tableEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [rounds]);
+
+  useEffect(() => {
+    if (!rooms[roomId]?.players) return;
+    const rank = Object.keys(rooms[roomId].players).map(p => p.name).indexOf(name);
+    setRoomRank(rank !== -1 ? rank : 0);
+  }, [rooms, name]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => socket?.disconnect();
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      socket?.disconnect();
+    };
+  }, [socket]);
+
+  useEffect(() => {
+    const roomFromURL = new URLSearchParams(window.location.search).get('room');
+    if (!roomFromURL || !socket) return;
+    const handleJoinRoomFromURL = () => {
+      setRoomId(roomFromURL);
+      changeGameState("lobby");
+      socket.emit("join_room", { room: roomFromURL });
+      console.log(`Auto-joining room from URL: ${roomFromURL}`);
+      window.history.replaceState({}, document.title, window.location.origin);
+    };
+    if (socket.connected) {
+      handleJoinRoomFromURL();
+    } else {
+      socket.once("connect", handleJoinRoomFromURL);
+    }
+  }, [socket]);
+
+  const handleWins2win = e => socket && roomId && socket.emit("update_room", { room: roomId, wins2win: e });
+  const handleRsize = e => socket && roomId && socket.emit("update_room", { room: roomId, rsize: e });
+  const handleAis = e => socket && roomId && socket.emit("manage_ais", { room: roomId, ai_dif: e });
+  const tableEndRef = useRef(null);
 
   const generatePid = () => {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -229,137 +203,33 @@ function App() {
 
   const startGame = mode => {
     setRounds([]);
-    socket?.emit("create_room", { mode, wins2win, roomSize });
+    socket?.emit("create_room", { mode });
+  };
+
+  const changeGameState = newState => {
+    ["lobby", "running"].includes(gameState) && !["lobby", "running"].includes(newState) && quitGame(true);
+    setGameState(newState);
+  };
+
+  const toggleSettings = () => {
+    editingName && setEditingName(false);
+    setDisplaySettings(prev => !prev);
+  };
+
+  const handleCopyURL = url => {
+    navigator?.clipboard?.writeText
+      ? navigator.clipboard.writeText(url)
+        .then(() => alert("URL copied to clipboard!"))
+        .catch(() => alert("Failed to copy URL. Please try manually."))
+      : fallbackCopyTextToClipboard(url);
   };
 
   const handleChoice = choice => {
     setSelectedChoice(choice);
     setIsReady(true);
-    if (socket && roomId) {
-      console.log(`You made a move: ${choice}`);
-      socket.emit("make_move", { room: roomId, move: choice });
-    }
-  };
-
-  const handleSort = (key, table) => {
-    let direction = "desc";
-
-    if (table === "leaderboard") {
-      if (leaderboardSortConfig.key === key && leaderboardSortConfig.direction === "desc") {
-        direction = "asc";
-      }
-      setLeaderboardSortConfig({ key, direction });
-    } else if (table === "rooms") {
-      if (roomsSortConfig.key === key && roomsSortConfig.direction === "desc") {
-        direction = "asc";
-      }
-      setRoomsSortConfig({ key, direction });
-    }
-  };
-
-  const sortedLeaderboard = useMemo(() => {
-    const sortableItems = [...leaderboard];
-    sortableItems.sort((a, b) => {
-      if (a[leaderboardSortConfig.key] < b[leaderboardSortConfig.key]) {
-        return leaderboardSortConfig.direction === "asc" ? -1 : 1;
-      }
-      if (a[leaderboardSortConfig.key] > b[leaderboardSortConfig.key]) {
-        return leaderboardSortConfig.direction === "asc" ? 1 : -1;
-      }
-      return 0;
-    });
-    return sortableItems;
-  }, [leaderboard, leaderboardSortConfig]);
-
-  const quitGame = (game_state) => {
-    if (socket && roomId && gameState != "game_over") {
-      socket.emit("quit_game", { room: roomId });
-      console.log(`Player ${socket.id} left room ${roomId}`);
-    }
-    setRoomId(null);
-    setRounds([]);
-    setWins2win(2);
-    setRoomSize(2);
-    setIsReady(false);
-    setSelectedChoice(null);
-    setGameState(game_state);
-  };
-
-  const handleEditingName = () => {
-    if (editingName) {
-      setEditingName(false);
-      if (newName.trim() === "") {
-        setNameError("Name cannot be empty");
-        return;
-      }
-      if (/^ai\d+$/i.test(newName.trim())) {
-        setNameError("Name cannot be AI");
-        return;
-      }
-      const new_name = newName.trim();
-      setName(new_name);
-      // The ref will be updated via useEffect
-      socket.emit("edit_name", { old_name: name, new_name: new_name });
-      console.log(`Name updated to: ${new_name}`);
-      setNewName("");
-    } else {
-      setEditingName(true);
-    }
-  };
-
-  const joinRoom = rid => {
-    if (socket) {
-      socket.emit("join_room", { room: rid });
-      setRoomId(rid);
-      if (rooms[rid]) {
-        setWins2win(rooms[rid].wins2win);
-        setRoomSize(rooms[rid].rsize);
-      }
-      changeGameState("lobby");
-      console.log(`Joined room ${rid}`);
-    } else {
-      console.error("Socket not ready yet, unable to join room.");
-    }
-  };
-
-  const changeGameState = newState => {
-    if (["lobby", "running"].includes(gameState) && !["lobby", "running"].includes(newState)) {
-      quitGame("main");
-    }
-    setGameState(newState);
-  };
-
-  const fallbackCopyTextToClipboard = text => {
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    textArea.style.position = "fixed";  // Prevent scroll jump
-    document.body.appendChild(textArea);
-    textArea.select();
-
-    try {
-      document.execCommand("copy") ? alert("URL copied!") : alert("Failed to copy.");
-    } catch {
-      alert("Failed to copy. Please try manually.");
-    }
-
-    document.body.removeChild(textArea);
-  };
-
-  const handleCopyURL = url => {
-    if (navigator?.clipboard?.writeText) {
-      navigator.clipboard.writeText(url)
-        .then(() => alert("URL copied to clipboard!"))
-        .catch(() => alert("Failed to copy URL. Please try manually."));
-    } else {
-      fallbackCopyTextToClipboard(url);
-    }
-  };
-
-  const toggleSettings = () => {
-    if (editingName) {
-      setEditingName(false);
-    }
-    setDisplaySettings(prev => !prev);
+    if (!socket || !roomId) return;
+    console.log(`You made a move: ${choice}`);
+    socket.emit("make_move", { room: roomId, move: choice });
   };
 
   const handleEditingAvatar = (newAvatar) => {
@@ -380,169 +250,57 @@ function App() {
     }
   };
 
-  const handleWins2win = e => {
-    if (socket && roomId) {
-      socket.emit("update_room", { room: roomId, wins2win: e });
+  const joinRoom = rid => {
+    if (!socket) {
+      return console.error("Socket not ready yet, unable to join room.");
     }
-  }
+    socket.emit("join_room", { room: rid });
+    setRoomId(rid);
+    changeGameState("lobby");
+    console.log(`Joined room ${rid}`);
+  };
 
-  const handleRoomSize = e => {
-    if (socket && roomId) {
-      socket.emit("update_room", { room: roomId, rsize: e });
+  const handleEditingName = () => {
+    if (!editingName) return setEditingName(true);
+    setEditingName(false);
+    const trimmedName = newName.trim();
+    if (!trimmedName) return setNameError("Name cannot be empty");
+    if (/^ai\d+$/i.test(trimmedName)) return setNameError("Name cannot be AI");
+    setName(trimmedName);
+    socket.emit("edit_name", { old_name: name, new_name: trimmedName });
+    console.log(`Name updated to: ${trimmedName}`);
+    setNewName("");
+  };
+
+  const fallbackCopyTextToClipboard = text => {
+    const textArea = Object.assign(document.createElement("textarea"), { value: text, style: { position: "fixed" } });
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand("copy") ? alert("URL copied!") : alert("Failed to copy.");
+    } catch {
+      alert("Failed to copy. Please try manually.");
     }
-  }
+    document.body.removeChild(textArea);
+  };
 
-  const handleAis = e => {
-    if (socket && roomId) {
-      socket.emit("manage_ais", { room: roomId, ai_dif: e });
-    }
-  }
-
-  const tableEndRef = useRef(null);
-  useEffect(() => {
-    if (tableEndRef.current) {
-      tableEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [rounds]);
-
-  const quitGameOver = () => {
+  const quitGame = (left) => {
+    left && socket?.emit("quit_game", { room: roomId });
+    setRoomId(null);
+    setRounds([]);
+    setIsReady(false);
+    setSelectedChoice(null);
     setGameState("main");
-    setSpecRoomId(null);
   };
 
-  const renderRoomTable = () => {
-    let room = rooms[roomId]
-    room = roomsData?.[specRoomId] || room;
-    if (!room || !room.players || !room.rounds) {
-      return <div className="text_display">Loading...</div>;
-    }
-    const highestScore = Math.max(...Object.values(room.players).map(p => p.w));
-    return (
-      <div className="table_container">
-        <table className="rounds_table">
-          <thead>
-            <tr>
-              <th>R</th>
-              {Object.entries(room.players).map(([k, v], i) => (
-                <th key={i}>
-                  <div className="circle_wrapper"
-                    style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
-                    <img src={avatarList[v.a || playersData[k].a]} alt={`${k}'s avatar`} />
-                  </div>
-                </th>
-              ))}
-              <th>Winner</th>
-            </tr>
-          </thead>
-          <tbody>
-            {room.rounds.map((r, i) => (
-              <React.Fragment key={i}>
-                {r.steps.map((step, j) => (
-                  <tr key={`${i}-${j}`}>
-                    <td>{`${i + 1}.${j + 1}`}</td>
-                    {step.map((move, k) => (
-                      <td key={k}>
-                        {move === "R" ? "✊" : move === "P" ? "✋" : move === "S" ? "✌️" : ""}
-                      </td>
-                    ))}
-                    <td className={r.winner === pid ? "win" : "lose"}>
-                      {j === r.steps.length - 1 ? room.players[r.winner]?.n || playersData[r.winner]?.n : ""}
-                    </td>
-                  </tr>
-                ))}
-              </React.Fragment>
-            ))}
-            <tr ref={tableEndRef}>
-              <td></td>
-              {Object.values(room.players).map((p, i) => (
-                <td key={i} className={p.w === highestScore ? "win" : "lose"}>{p.w}</td>
-              ))}
-              <td></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    )
+  const handleSort = (key, table) => {
+    const sortConfig = table === "lead" ? leadSortConfig : roomsSortConfig;
+    const setSortConfig = table === "lead" ? setLeadSortConfig : setRoomsSortConfig;
+    const direction = sortConfig.key === key && sortConfig.direction === "desc" ? "asc" : "desc";
+    setSortConfig({ key, direction });
   };
 
-  const renderRoomData = (<>
-    <div className="main_container">
-      <div className="table_menu_container">
-        {renderRoomTable()}
-      </div>
-    </div>
-    <div className="footer_container">
-      <div className="button_container">
-        <button className="button" onClick={() => setSpecRoomId(null)} style={{ cursor: "pointer" }}>Back</button>
-      </div>
-    </div>
-  </>)
-
-  const renderPlayerData = () => {
-    if (!specPlayerId || !playersData?.[specPlayerId] || !specRoomsData) {
-      return <div className="text_display">Loading...</div>;
-    }
-    const specPlayer = playersData[specPlayerId];
-    const maxLen = Math.max(0, ...Object.values(specRoomsData).map(g => Object.keys(g.players || {}).length));
-    return (<>
-      <div className="main_container">
-        {!specPlayer?.a ? (<div className="text_display">Loading...</div>) : (
-          <div className="table_menu_container">
-            <div className="button_container">
-              <div className="circle_wrapper" style={{ border: `2px solid ${colors[0]}` }}>
-                <img src={avatarList[specPlayer.a]} alt={`${specPlayer.n}'s Avatar`} />
-              </div>
-              <div className="text_display">{specPlayer.n}</div>
-            </div>
-            <div className="button_container">
-              <div className="text_display">R: {specPlayer.r}% | W: {specPlayer.w} | L: {specPlayer.l}</div>
-            </div>
-            <div className="table_container">
-              <table className="player_table">
-                <thead>
-                  <tr>
-                    <th></th>
-                    {[...Array(maxLen)].map((_, i) => (
-                      <><th key={`P${i}`}>{i+1}</th><th key={`S${i}`}></th></>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(specRoomsData).map(([key, val], i) => {
-                    const players = Object.entries(val.players);
-                    const emptyTd = maxLen - players.length;
-                    return (
-                      <tr key={i}>
-                        <td onClick={() => setSpecRoomId(key)} style={{ cursor: "pointer" }}>{i + 1} 👁️</td>
-                        {players.map(([k, v], j) => (
-                          <React.Fragment key={`${i}-${j}`}>
-                            <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer", padding: "0" }}>
-                              <img className="avatar" src={avatarList[playersData[k].a]}
-                                alt={`${playersData[k].n}'s Avatar`}/>
-                            </td>
-                            <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer" }}>{v.w}</td>
-                          </React.Fragment>
-                        ))}
-                        {Array(emptyTd).fill(<><td key={`p${i}`}/><td key={`s${i}`}/></>)}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-      <div className="footer_container">
-        <div className="button_container">
-          <button className="button" style={{ cursor: "pointer" }}
-            onClick={() => { setSpecPlayerId(null); setSpecRoomsData({}) }}>Back</button>
-        </div>
-      </div>
-    </>);
-  };
-
-  const renderEditingAvatar = (<>
+  const renderEditingAvatar = <>
     <div className="main_container">
       <div>
         <div className="text_display">Select an Avatar</div>
@@ -561,9 +319,9 @@ function App() {
         <button className="button" onClick={() => setEditingAvatar(false)}>Back</button>
       </div>
     </div>
-  </>)
+  </>
 
-  const renderDisplaySettings = (<>
+  const renderDisplaySettings = <>
     <div className="main_container">
       <div>
         <div className="text_display">Settings</div>
@@ -588,50 +346,176 @@ function App() {
         <button className="button" onClick={toggleSettings}>Back</button>
       </div>
     </div>
-  </>)
+  </>
 
-  const renderLeaderboard = (<>
-    <div className="main_container">
-      <div className="table_menu_container">
-        <div className="text_display">Leaderboard</div>
-        <div className="table_container">
-          <table className="leaderboard_table">
-            <thead>
-              <tr>
-                <th></th>
-                <th onClick={() => handleSort("r", "leaderboard")}>R</th>
-                <th onClick={() => handleSort("w", "leaderboard")}>W</th>
-                <th onClick={() => handleSort("l", "leaderboard")}>L</th>
-                <th onClick={() => handleSort("avatar", "leaderboard")}>A</th>
-                <th onClick={() => handleSort("n", "leaderboard")}>Name</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!!leaderboard && sortedLeaderboard.map((p, i) => (
-                <tr key={i} onClick={() => setSpecPlayerId(p.pid)} style={{cursor: "pointer"}}>
-                  <td className={p.n === name ? "highlighted_text" : ""}>{i + 1}</td>
-                  <td className={p.n === name ? "highlighted_text" : ""}>{p.r.toFixed(0)}</td>
-                  <td className={p.n === name ? "highlighted_text" : ""}>{p.w}</td>
-                  <td className={p.n === name ? "highlighted_text" : ""}>{p.l}</td>
-                  <td style={{ padding: "0" }}>
-                    <img src={avatarList[p.a]} className="avatar" alt={`${p.n}'s Avatar`} />
+  const renderRoomTable = () => {
+    const room = roomsHist?.[specRoomId] || rooms[roomId];
+    if (!room || !room.players || !room.rounds) return <div className="text_display">Loading...</div>;
+    const highestScore = Math.max(...Object.values(room.players).map(p => p.w));
+    return <div className="table_container">
+      <table className="rounds_table">
+        <thead>
+          <tr>
+            <th>R</th>
+            {Object.entries(room.players).map(([k, v], i) => (
+              <th key={i}>
+                <div className="circle_wrapper"
+                  style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
+                  <img src={avatarList[v.a || pidPlayer[k].a]} alt={`${k}'s avatar`} />
+                </div>
+              </th>
+            ))}
+            <th>Winner</th>
+          </tr>
+        </thead>
+        <tbody>
+          {room.rounds.map((r, i) => (
+            <React.Fragment key={i}>
+              {r.steps.map((step, j) => (
+                <tr key={`${i}-${j}`}>
+                  <td>{`${i + 1}.${j + 1}`}</td>
+                  {step.map((move, k) => (
+                    <td key={k}>
+                      {move === "R" ? "✊" : move === "P" ? "✋" : move === "S" ? "✌️" : ""}
+                    </td>
+                  ))}
+                  <td className={room.players[r.winner]?.team === room.players[pid]?.team ? "win" : ""}>
+                    {j === r.steps.length - 1 ? room.players[r.winner]?.n || pidPlayer[r.winner]?.n : ""}
                   </td>
-                  <td className={p.n === name ? "highlighted_text" : ""}>{p.n}</td>
                 </tr>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </React.Fragment>
+          ))}
+          <tr ref={tableEndRef}>
+            <td></td>
+            {Object.values(room.players).map((p, i) => (
+              <td key={i} className={p.w === highestScore ? "win" : ""}>{p.w}</td>
+            ))}
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>;
+  };
+
+  const renderRoomData = <>
+    <div className="main_container">
+      <div className="table_menu_container">
+        {renderRoomTable()}
       </div>
     </div>
     <div className="footer_container">
       <div className="button_container">
-        <button className="button" onClick={() => setDisplayLeaderboard(prev => !prev)}>Back</button>
+        <button className="button" onClick={() => setSpecRoomId(null)} style={{ cursor: "pointer" }}>Back</button>
       </div>
     </div>
-  </>)
+  </>
 
-  const renderMain = (<>
+  const renderPlayerData = () => {
+    if (!specPlayerId || !pidPlayer?.[specPlayerId] || !playerRoomsHist) return <div className="text_display">Loading...</div>;
+    const specPlayer = pidPlayer[specPlayerId];
+    const maxLen = Math.max(0, ...Object.values(playerRoomsHist).map(g => Object.keys(g.players || {}).length));
+    return <>
+      <div className="main_container">
+        {!specPlayer?.a ? (<div className="text_display">Loading...</div>) : (
+          <div className="table_menu_container">
+            <div className="button_container">
+              <div className="circle_wrapper" style={{ border: `2px solid ${colors[0]}` }}>
+                <img src={avatarList[specPlayer.a]} alt={`${specPlayer.n}'s Avatar`} />
+              </div>
+              <div className="text_display">{specPlayer.n}</div>
+            </div>
+            <div className="button_container">
+              <div className="text_display">R: {specPlayer.r}% | W: {specPlayer.w} | L: {specPlayer.l}</div>
+            </div>
+            <div className="table_container">
+              <table className="player_table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    {[...Array(maxLen)].map((_, i) => (
+                      <><th key={`P${i}`}>{i+1}</th><th key={`S${i}`}></th></>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(playerRoomsHist).map(([key, val], i) => {
+                    const players = Object.entries(val.players);
+                    const emptyTd = maxLen - players.length;
+                    return <tr key={i}>
+                      <td onClick={() => setSpecRoomId(key)} style={{ cursor: "pointer" }}>{i + 1} 👁️</td>
+                      {players.map(([k, v], j) => (
+                        <React.Fragment key={`${i}-${j}`}>
+                          <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer", padding: "0" }}>
+                            <img className="avatar" src={avatarList[pidPlayer[k].a]}
+                              alt={`${pidPlayer[k].n}'s Avatar`}/>
+                          </td>
+                          <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer" }}>{v.w}</td>
+                        </React.Fragment>
+                      ))}
+                      {Array(emptyTd).fill(<><td key={`p${i}`}/><td key={`s${i}`}/></>)}
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="footer_container">
+        <div className="button_container">
+          <button className="button" style={{ cursor: "pointer" }}
+            onClick={() => { setSpecPlayerId(null); setPlayerRoomsHist({}) }}>Back</button>
+        </div>
+      </div>
+    </>;
+  };
+
+  const renderLead = () => {
+    const lead = Object.keys(pidPlayer).map(pid => ({ pid: pid, ...pidPlayer[pid] }))
+    return <>
+      <div className="main_container">
+        <div className="table_menu_container">
+          <div className="text_display">Lead</div>
+          <div className="table_container">
+            <table className="lead_table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th onClick={() => handleSort("r", "lead")}>R</th>
+                  <th onClick={() => handleSort("w", "lead")}>W</th>
+                  <th onClick={() => handleSort("l", "lead")}>L</th>
+                  <th onClick={() => handleSort("avatar", "lead")}>A</th>
+                  <th onClick={() => handleSort("n", "lead")}>Name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lead && lead.map((p, i) => (
+                  <tr key={i} onClick={() => setSpecPlayerId(p.pid)} style={{cursor: "pointer"}}>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{i + 1}</td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.r.toFixed(0)}</td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.w}</td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.l}</td>
+                    <td style={{ padding: "0" }}>
+                      <img src={avatarList[p.a]} className="avatar" alt={`${p.n}'s Avatar`} />
+                    </td>
+                    <td className={p.n === name ? "highlighted_text" : ""}>{p.n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div className="footer_container">
+        <div className="button_container">
+          <button className="button" onClick={() => setDisplayLead(prev => !prev)}>Back</button>
+        </div>
+      </div>
+    </>;
+  };
+
+  const renderMain = <>
     <div className="main_container">
       {!pid ? (<div className="text_display">Loading...</div>) : (
         <div className="button_container">
@@ -642,15 +526,15 @@ function App() {
     <div className="footer_container">
       <div className="text_display" style={{ fontSize: "1.7vh" ,fontStyle: "italic", color: "#999" }}>Hardtech</div>
     </div>
-  </>)
+  </>
 
-  const renderMenu = (<>
+  const renderMenu = <>
     <div className="main_container">
       <div>
         <div className="text_display">Select Mode</div>
         <div className="button_container">
           <button className="button" onClick={() => startGame("ai")}>Versus AI</button>
-          <button className="button" onClick={() => startGame("online")}>Versus Player</button>
+          <button className="button" onClick={() => startGame("pvp")}>Versus Player</button>
         </div>
       </div>
     </div>
@@ -659,19 +543,18 @@ function App() {
         <button className="button" onClick={() => changeGameState("main")}>Back</button>
       </div>
     </div>
-  </>)
+  </>
 
-  const renderLobby = (<>
+  const renderLobby = <>
     <div className="main_container">
       <div className="table_menu_container">
-        {displayOthersRooms && (<div>
+        {displayOthersRooms && (<>
           <div className="text_display">Others Rooms</div>
           <div className="table_container">
             <table className="rooms_table">
               <thead>
                 <tr>
                   <th>R</th>
-                  <th>S</th>
                   <th onClick={() => handleSort("status", "rooms")}>O</th>
                   <th onClick={() => handleSort("nb", "rooms")}>N</th>
                   <th>P</th>
@@ -682,15 +565,17 @@ function App() {
                 {Object.keys(rooms).filter(rid => rid !== roomId).length ? (
                   Object.entries(rooms).filter(([rid]) => rid !== roomId).map(([rid, r], i) => (<tr key={i}>
                     <td>{r.wins2win}</td>
-                    <td>{r.rsize}</td>
                     <td>{r.status === "running" ? "🟢" : "🔴"}</td>
                     <td>{Object.keys(r.players).length}/{r.rsize}</td>
                     <td>
-                      <ul className="player_list">
-                        {Object.values(r.players).map((v, j) => (
-                          <li key={`${i}-${j}`}>{v.status === "ready" ? "🟢" : "🔴"} {v.name}</li>
+                      <div className="button_container" style={{padding: "0"}}>
+                        {Object.entries(r.players).map(([k, v], j) => (
+                          <div key={`${i}-${j}`} className="circle_wrapper" onClick={() => setSpecPlayerId(k)}
+                            style={{cursor: "pointer", border: `2px solid ${v.status === "ready" ? "#0F0" : "#F00"}` }}>
+                            <img src={avatarList[v.avatar]} alt={`${v.name}'s avatar'`}/>
+                          </div>
                         ))}
-                      </ul>
+                      </div>
                     </td>
                     <td>
                       {r.status === "waiting" && Object.keys(r.players).length != r.rsize && (
@@ -700,13 +585,13 @@ function App() {
                   </tr>
                   ))) : (
                   <tr>
-                    <td colSpan="6">No available rooms.</td>
+                    <td colSpan="5">No available rooms.</td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-        </div>)}
+        </>)}
         <div className="button_container">
           <button className="button" onClick={() => setDisplayOthersRooms(prev => !prev)}>
             {displayOthersRooms ? "Hide Others Rooms" : "Show Others Rooms"}
@@ -717,22 +602,23 @@ function App() {
           <input type="text" readOnly className="text_input"
             value={roomId ? `${window.location.origin}/?room=${roomId}` : ""}
             onFocus={e => e.target.select()} />
-          <button className="button" onClick={() => handleCopyURL(`${window.location.origin}/?room=${roomId}`)}>
+          <button className="button" disabled={rooms[roomId]?.rsize <= Object.keys(rooms[roomId]?.players ?? {}).length}
+            onClick={() => handleCopyURL(`${window.location.origin}/?room=${roomId}`)}>
             Copy
           </button>
         </div>
         <div className="button_container">
           <div className="text_display">Wins to Win:</div>
-          <button className="button" disabled={wins2win <= 1} onClick={() => handleWins2win(-1)}>-1</button>
-          <div className="text_display">{wins2win}</div>
-          <button className="button" disabled={5 <= wins2win} onClick={() => handleWins2win(1)}>+1</button>
+          <button className="button" disabled={rooms[roomId]?.wins2win <= 1} onClick={() => handleWins2win(-1)}>-1</button>
+          <div className="text_display">{rooms[roomId]?.wins2win}</div>
+          <button className="button" disabled={5 <= rooms[roomId]?.wins2win} onClick={() => handleWins2win(1)}>+1</button>
         </div>
         <div className="button_container">
           <div className="text_display">Room Size:</div>
-          <button className="button" onClick={() => handleRoomSize(-1)}
-            disabled={roomSize <= rooms[roomId]?.players?.length}>-1</button>
-          <div className="text_display">{roomSize}</div>
-          <button className="button" disabled={5 <= roomSize} onClick={() => handleRoomSize(1)}>+1</button>
+          <button className="button" onClick={() => handleRsize(-1)}
+            disabled={rooms[roomId]?.rsize <= Math.max(2, Object.values(rooms[roomId]?.players ?? {}).length)}>-1</button>
+          <div className="text_display">{rooms[roomId]?.rsize}</div>
+          <button className="button" disabled={5 <= rooms[roomId]?.rsize} onClick={() => handleRsize(1)}>+1</button>
         </div>
         <div className="button_container">
           <div className="text_display">Manage AIs:</div>
@@ -740,13 +626,13 @@ function App() {
             disabled={!(rooms[roomId]?.players && Object.values(rooms[roomId].players).some(v => v.is_ai))}>-1</button>
           <div className="text_display">{Object.values(rooms[roomId]?.players ?? {}).filter(v => v.is_ai).length}</div>
           <button className="button" onClick={() => handleAis(1)}
-            disabled={roomSize <= Object.keys(rooms[roomId]?.players ?? {}).length}>+1</button>
+            disabled={rooms[roomId]?.rsize <= Object.keys(rooms[roomId]?.players ?? {}).length}>+1</button>
         </div>
       </div>
     </div>
     <div className="footer_container">
       <div className="button_container">
-        <button className="button" onClick={() => quitGame("main")}>Quit</button>
+        <button className="button" onClick={() => quitGame(true)}>Quit</button>
         <ul className="player_list">
           {rooms[roomId]?.players &&
             Object.values(rooms[roomId].players).map((v, i) => (
@@ -756,9 +642,9 @@ function App() {
         <button className="button" onClick={handleReady}>{isReady ? "Wait" : "Ready"}</button>
       </div>
     </div>
-  </>)
+  </>
 
-  const renderRunning = (<>
+  const renderRunning = <>
     <div className="main_container">
       <div className="table_menu_container">
         <div className="text_display">Game History</div>
@@ -786,59 +672,43 @@ function App() {
         </ul>
       </div>
     </div>
-  </>)
+  </>
 
-  const renderGameOver = (<>
-    <div className="main_container">
-      <div className="table_menu_container">
-        <div className="text_display">Final Results</div>
-      </div>
-    </div>
-    <div className="footer_container">
-      <div className="button_container">
-        <button className="button" onClick={quitGameOver}>Main Menu</button>
-      </div>
-    </div>
-  </>)
-
-  return (
-    <div className="app">
-      {!pid ? (<div className="text_display" style={{ paddingTop: "2.5vh" }}>Loading...</div>) : (
-        <div className="header_container">
-          <div className="button_container">
-            {gameState != "main" &&
-              <button className={displayLeaderboard ? "highlighted_button" : "button"} onClick={() => setDisplayLeaderboard(prev => !prev)}>🏆</button>
-            }
-            {avatar && (
-              <div className="circle_wrapper" onClick={() => setSpecPlayerId(pid)}
-                style={{cursor: "pointer", marginLeft: "0.8vh", border: `2px solid ${colors[roomRank]}` }}>
-                <img src={avatarList[avatar]} alt="Your Avatar"/>
-              </div>
-            )}
-            <div className="text_display" style={{ cursor: "pointer", fontSize: "2vh" }}
-              onClick={() => setSpecPlayerId(pid)}>{name}</div>
-            {!["lobby", "running"].includes(gameState) &&
-              <button className={displaySettings ? "highlighted_button" : "button"} onClick={toggleSettings}>⚙️</button>
-            }
-          </div>
+  return <div className="app">
+    {!pid ? (<div className="text_display" style={{ paddingTop: "2.5vh" }}>Loading...</div>) : (
+      <div className="header_container">
+        <div className="button_container">
+          {gameState != "main" &&
+            <button className={displayLead ? "highlighted_button" : "button"} onClick={() => setDisplayLead(prev => !prev)}>🏆</button>
+          }
+          {avatar && (
+            <div className="circle_wrapper" onClick={() => setSpecPlayerId(pid)}
+              style={{cursor: "pointer", marginLeft: "0.8vh", border: `2px solid ${colors[roomRank]}` }}>
+              <img src={avatarList[avatar]} alt="Your Avatar"/>
+            </div>
+          )}
+          <div className="text_display" style={{ cursor: "pointer", fontSize: "2vh" }}
+            onClick={() => setSpecPlayerId(pid)}>{name}</div>
+          {!["lobby", "running"].includes(gameState) &&
+            <button className={displaySettings ? "highlighted_button" : "button"} onClick={toggleSettings}>⚙️</button>
+          }
         </div>
-      )}
+      </div>
+    )}
 
-      {editingAvatar ? renderEditingAvatar :
-      displaySettings ? renderDisplaySettings :
-      specRoomId ? renderRoomData :
-      specPlayerId ? renderPlayerData() :
-      displayLeaderboard ? renderLeaderboard :
-      <>
-        {gameState === "main" && renderMain}
-        {gameState === "menu" && renderMenu}
-        {gameState === "lobby" && renderLobby}
-        {gameState === "running" && renderRunning}
-        {gameState === "game_over" && renderGameOver}
-      </>}
+    {editingAvatar ? renderEditingAvatar
+    : displaySettings ? renderDisplaySettings
+    : specRoomId ? renderRoomData
+    : specPlayerId ? renderPlayerData()
+    : displayLead ? renderLead()
+    : <>
+      {gameState === "main" && renderMain}
+      {gameState === "menu" && renderMenu}
+      {gameState === "lobby" && renderLobby}
+      {gameState === "running" && renderRunning}
+    </>}
 
-    </div>
-  );
+  </div>;
 }
 
 export default App;
