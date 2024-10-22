@@ -5,7 +5,7 @@ from eventlet.event import Event
 from eventlet.semaphore import Semaphore
 eventlet.monkey_patch()
 
-import os, json, base64, random, string, logging, threading
+import os, json, time, base64, random, string, logging, threading
 from flask import Flask, jsonify, request, Response, make_response, send_from_directory
 from flask_cors import CORS
 from flask_compress import Compress
@@ -249,7 +249,7 @@ def handle_create_room(data):
     avatar = pid_player.get(pid, {}).get("a")
     rid = "".join(random.choices(string.ascii_letters + string.digits, k=15))
     if mode == "ai":
-        rooms[rid] = {"status": "running", "wins2win": 2, "rsize": 2,
+        rooms[rid] = {"status": "running", "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
             "players": {
                 pid: {"name": name, "avatar": avatar, "team": 1, "is_ai": False, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0},
                 "AI1": {"name": "AI1", "avatar": "ai.svg", "team": 2, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}},
@@ -259,7 +259,7 @@ def handle_create_room(data):
         log.info(f"Player {name} (pid: {pid}) created new room {rid}")
         log.info(f"AI1 joined room {rid}. Room is now running.")
     elif mode == "pvp":
-        rooms[rid] = {"status": "waiting", "wins2win": 2, "rsize": 2,
+        rooms[rid] = {"status": "waiting", "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
             "players": {
                 pid: {"name": name, "avatar": avatar, "team": 1, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}},
             "rounds": [{"index": 1, "steps": [], "winner": None}]}
@@ -355,6 +355,22 @@ def handle_player_ready(data):
         log.info(f"Game started in room {rid}.")
     update_db(ROOMS_FILE, rooms)
 
+@socketio.on("update_spec")
+def handle_update_spec(data):
+    pid, rid, ep = sid_pid.get(sid := request.sid), data.get("room"), "update_spec"
+    if not check_pid(sid, pid, ep):
+        return
+
+    new_spec = data.get("new_spec")
+    if new_spec:
+        rooms[rid]["spec"].append(pid)
+        if rooms[rid]["max_spec"] < len(rooms[rid]["spec"]):
+            rooms[rid]["max_spec"] = len(rooms[rid]["spec"])
+    else:
+        rooms[rid]["spec"].remove(pid)
+    log.info(f"Player (pid: {pid}) in room {rid} {'join' if new_spec else 'quit'} spec.")
+    update_db(ROOMS_FILE, rooms)
+
 @socketio.on("make_move")
 def handle_make_move(data):
     pid, rid, ep = sid_pid.get(sid := request.sid), data.get("room"), "make_move"
@@ -391,7 +407,7 @@ def handle_make_move(data):
                 emit_data = {"rid": rid, "game_over": False, "winner": None, "rounds": room["rounds"]}
                 socketio.emit("game_result", emit_data, room=rid)
                 log.info(f"New step in room {rid}. Remaining players: {cplayers}")
-                update_db(ROOMS_FILE, rooms, rid)
+                update_db(ROOMS_FILE, rooms)
                 return
             else:
                 while 1 < len(cplayers):
@@ -442,14 +458,17 @@ def handle_make_move(data):
             socketio.emit("game_result", emit_data, room=rid)
 
             rooms_hist[rid] = {
+                "date": int(time.time()), "gid": "rps", "max_spec": room["max_spec"],
                 "players": {key: {k: v[k] for k in ["team", "is_ai", "w", "l"]} for key, v in room["players"].items()},
                 "rounds": [{"index": r["index"], "winner": r["winner"], "steps": r["steps"]} for r in room["rounds"]]}
             update_db(ROOMS_HIST_FILE, rooms_hist)
             del rooms[rid]
+            update_db(ROOMS_FILE, rooms)
             log.info("Room history updated.")
             log.info(f"Room {rid} data saved and removed from active rooms.")
+            return
 
-    update_db(ROOMS_FILE, rooms, rid)
+    update_db(ROOMS_FILE, rooms)
 
 @socketio.on("quit_game")
 def handle_quit_game(data):

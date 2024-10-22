@@ -161,6 +161,10 @@ td img {
   display: block;
 }
 
+/* td button {
+  display: block;
+} */
+
 th {
   top: 0;
   text-align: center;
@@ -193,10 +197,6 @@ tr:nth-child(odd) td {
 .rooms_table td {
   padding: 8px;
   text-align: center;
-}
-
-.rooms_table th {
-  cursor: pointer;
 }
 
 .rooms_table td:nth-child(4) {

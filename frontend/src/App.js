@@ -1,6 +1,6 @@
 // frontend/App.js
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useDebugValue } from "react";
 import "./App.css";
 import { io } from "socket.io-client";
 
@@ -30,8 +30,9 @@ function App() {
 
   const [rounds, setRounds] = useState([]);
   
-  const [leadSortConfig, setLeadSortConfig] = useState({ key: "w", direction: "desc" });
-  const [roomsSortConfig, setRoomsSortConfig] = useState({ key: "nb", direction: "asc" });
+  const [leadSort, setLeadSort] = useState({ key: "w", direction: "desc" });
+  const [lobbySort, setLobbySort] = useState({ key: "status", direction: "asc" });
+  const [playerSort, setPlayerSort] = useState({ key: "date", direction: "desc" });
 
   const [avatarList, setAvatarList] = useState({});
   const [pidPlayer, setPidPlayer] = useState({});
@@ -118,7 +119,7 @@ function App() {
       if (d.game_over) {
         console.log(`Game over in room ${d.rid}`);
         quitGame(false);
-        setSpecRoomId(d.rid);
+        handleSpecRoomId(d.rid);
       } else {
         console.log(d.winner ? `Round winner: ${d.winner} in room: ${d.rid}` : `New step in room: ${d.rid}`);
         setSelectedChoice(null);
@@ -146,12 +147,24 @@ function App() {
   }, []);
 
   useEffect(() => {
+    sortTable(leadSort.key, leadSort.direction, pidPlayer, setPidPlayer);
+  }, [pidPlayer]);
+
+  useEffect(() => {
+    sortTable(lobbySort.key, lobbySort.direction, rooms, setRooms);
+  }, [rooms]);
+
+  useEffect(() => {
+    sortTable(playerSort.key, playerSort.direction, playerRoomsHist, setPlayerRoomsHist);
+  }, [playerRoomsHist]);
+
+  useEffect(() => {
     nameRef.current = name;
   }, [name]);
 
   useEffect(() => {
     setPlayerRoomsHist(Object.fromEntries(Object.entries(roomsHist).filter(([k, v]) => Object.keys(v.players).includes(specPlayerId))));
-  }, [specPlayerId]);
+  }, [specPlayerId, roomsHist]);
 
   useEffect(() => {
     if (tableEndRef.current) {
@@ -250,6 +263,15 @@ function App() {
     }
   };
 
+  const quitGame = (left) => {
+    left && socket?.emit("quit_game", { room: roomId});
+    setRoomId(null);
+    setRounds([]);
+    setIsReady(false);
+    setSelectedChoice(null);
+    setGameState("main");
+  };
+
   const joinRoom = rid => {
     if (!socket) {
       return console.error("Socket not ready yet, unable to join room.");
@@ -284,20 +306,41 @@ function App() {
     document.body.removeChild(textArea);
   };
 
-  const quitGame = (left) => {
-    left && socket?.emit("quit_game", { room: roomId });
-    setRoomId(null);
-    setRounds([]);
-    setIsReady(false);
-    setSelectedChoice(null);
-    setGameState("main");
+  const handleSort = (newKey, table_name) => {
+    const configs = {
+      lead: [leadSort, setLeadSort, pidPlayer, setPidPlayer],
+      rooms: [lobbySort, setLobbySort, rooms, setRooms],
+      player: [playerSort, setPlayerSort, playerRoomsHist, setPlayerRoomsHist],
+    };
+    const [sort, setSort, table, setTable] = configs[table_name];
+    const newDirection = sort.key === newKey && sort.direction === "desc" ? "asc" : "desc";
+    setSort({ key: newKey, direction: newDirection });
+    sortTable(newKey, newDirection, table, setTable);
   };
 
-  const handleSort = (key, table) => {
-    const sortConfig = table === "lead" ? leadSortConfig : roomsSortConfig;
-    const setSortConfig = table === "lead" ? setLeadSortConfig : setRoomsSortConfig;
-    const direction = sortConfig.key === key && sortConfig.direction === "desc" ? "asc" : "desc";
-    setSortConfig({ key, direction });
+  const handleSpecRoomId = rid => {
+    !rid && socket.emit("update_spec", { room: specRoomId, new_spec: false });
+    rooms[rid]?.status === "running" && socket.emit("update_spec", { room: rid, new_spec: true });
+    setSpecRoomId(rid);
+  };
+
+  const sortTable = (newKey, newDirection, table, setTable) => {
+    const sortedTable = Object.fromEntries(
+      Object.entries(table).sort(([, a], [, b]) => {
+        const va = a[newKey] ?? '';
+        const vb = b[newKey] ?? '';
+        if (typeof va === "string" && typeof vb === "string") {
+          return newDirection === "desc" ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else if (typeof va === "number" && typeof vb === "number") {
+          return newDirection === "asc" ? va - vb : vb - va;
+        }
+        return 0;
+      })
+    );
+    if (JSON.stringify(sortedTable) !== JSON.stringify(table)) {
+      setTable(sortedTable)
+      console.log(`Table sorted by ${newKey} ${newDirection}.`);
+    }
   };
 
   const renderEditingAvatar = <>
@@ -349,17 +392,17 @@ function App() {
   </>
 
   const renderRoomTable = () => {
-    const room = roomsHist?.[specRoomId] || rooms[roomId];
+    const room = roomsHist[specRoomId] || rooms[specRoomId] || rooms[roomId];
     if (!room || !room.players || !room.rounds) return <div className="text_display">Loading...</div>;
     const highestScore = Math.max(...Object.values(room.players).map(p => p.w));
     return <div className="table_container">
       <table className="rounds_table">
         <thead>
           <tr>
-            <th>R</th>
+            <th>{roomsHist[specRoomId] ? "📺" : "⏳"}</th>
             {Object.entries(room.players).map(([k, v], i) => (
               <th key={i}>
-                <div className="circle_wrapper"
+                <div className="circle_wrapper" onClick={() => {setSpecPlayerId(k); handleSpecRoomId(null)}}
                   style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
                   <img src={avatarList[v.a || pidPlayer[k].a]} alt={`${k}'s avatar`} />
                 </div>
@@ -406,7 +449,7 @@ function App() {
     </div>
     <div className="footer_container">
       <div className="button_container">
-        <button className="button" onClick={() => setSpecRoomId(null)} style={{ cursor: "pointer" }}>Back</button>
+        <button className="button" onClick={() => handleSpecRoomId(null)} style={{ cursor: "pointer" }}>Back</button>
       </div>
     </div>
   </>
@@ -415,6 +458,7 @@ function App() {
     if (!specPlayerId || !pidPlayer?.[specPlayerId] || !playerRoomsHist) return <div className="text_display">Loading...</div>;
     const specPlayer = pidPlayer[specPlayerId];
     const maxLen = Math.max(0, ...Object.values(playerRoomsHist).map(g => Object.keys(g.players || {}).length));
+    const live = Object.keys(rooms).find(rid => specPlayerId in rooms[rid]?.players);
     return <>
       <div className="main_container">
         {!specPlayer?.a ? (<div className="text_display">Loading...</div>) : (
@@ -432,29 +476,58 @@ function App() {
               <table className="player_table">
                 <thead>
                   <tr>
-                    <th></th>
+                    <th onClick={() => handleSort("date", "player")}></th>
                     {[...Array(maxLen)].map((_, i) => (
-                      <><th key={`P${i}`}>{i+1}</th><th key={`S${i}`}></th></>
+                      <React.Fragment key={`F${i}`}>
+                        <th key={`P${i}`}>{i + 1}</th>
+                        <th key={`S${i}`}></th>
+                      </React.Fragment>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
+                  {live && (<tr>
+                    <td onClick={() => handleSpecRoomId(live)} style={{ cursor: "pointer" }}>👁️</td>
+                    {Object.entries(rooms[live].players).map(([k, v], i) => {
+                      const bestw = Math.max(...Object.values(rooms[live].players).map(v => v.w));
+                      return (
+                        <React.Fragment key={`${i}`}>
+                          <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer", padding: "0" }}>
+                            <img className="avatar" src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s Avatar`} />
+                          </td>
+                          <td className={ v.w === bestw ? "win" : ""} onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer" }}>{v.w}</td>
+                        </React.Fragment>
+                      );
+                    })}
+                    {Array(maxLen - Object.keys(rooms[live].players).length).fill(0).map((_, idx) => (
+                      <React.Fragment key={`empty-${idx}`}>
+                        <td key={`p${idx}`} />
+                        <td key={`s${idx}`} />
+                      </React.Fragment>
+                    ))}
+                  </tr>)}
                   {Object.entries(playerRoomsHist).map(([key, val], i) => {
                     const players = Object.entries(val.players);
-                    const emptyTd = maxLen - players.length;
-                    return <tr key={i}>
-                      <td onClick={() => setSpecRoomId(key)} style={{ cursor: "pointer" }}>{i + 1} 👁️</td>
-                      {players.map(([k, v], j) => (
-                        <React.Fragment key={`${i}-${j}`}>
-                          <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer", padding: "0" }}>
-                            <img className="avatar" src={avatarList[pidPlayer[k].a]}
-                              alt={`${pidPlayer[k].n}'s Avatar`}/>
-                          </td>
-                          <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer" }}>{v.w}</td>
-                        </React.Fragment>
-                      ))}
-                      {Array(emptyTd).fill(<><td key={`p${i}`}/><td key={`s${i}`}/></>)}
-                    </tr>;
+                    const bestw = Math.max(...players.map(([k, v]) => v.w));
+                    return (
+                      <tr key={i}>
+                        <td onClick={() => handleSpecRoomId(key)} style={{ cursor: "pointer" }}>📺</td>
+                        {players.map(([k, v], j) => (
+                          <React.Fragment key={`${i}-${j}`}>
+                            <td onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer", padding: "0" }}>
+                              <img className="avatar" src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s Avatar`} />
+                            </td>
+                            <td className={ v.w === bestw ? "win" : ""} onClick={() => setSpecPlayerId(k)} style={{ cursor: "pointer" }}>{v.w}</td>
+                          </React.Fragment>
+                        ))}
+                        {Array(maxLen - players.length).fill(0).map((_, idx) => (
+                          <React.Fragment key={`empty-${i}-${idx}`}>
+                            <td key={`p${i}-${idx}`} />
+                            <td key={`s${i}-${idx}`} />
+                          </React.Fragment>
+                        ))}
+                      </tr>
+                    );
                   })}
                 </tbody>
               </table>
@@ -485,7 +558,7 @@ function App() {
                   <th onClick={() => handleSort("r", "lead")}>R</th>
                   <th onClick={() => handleSort("w", "lead")}>W</th>
                   <th onClick={() => handleSort("l", "lead")}>L</th>
-                  <th onClick={() => handleSort("avatar", "lead")}>A</th>
+                  <th>A</th>
                   <th onClick={() => handleSort("n", "lead")}>Name</th>
                 </tr>
               </thead>
@@ -554,38 +627,39 @@ function App() {
             <table className="rooms_table">
               <thead>
                 <tr>
-                  <th>R</th>
-                  <th onClick={() => handleSort("status", "rooms")}>O</th>
-                  <th onClick={() => handleSort("nb", "rooms")}>N</th>
+                  <th onClick={() => handleSort("wins2win", "rooms")}>R</th>
+                  <th onClick={() => handleSort("rsize", "rooms")}>N</th>
                   <th>P</th>
-                  <th>L</th>
+                  <th onClick={() => handleSort("status", "rooms")}>L</th>
                 </tr>
               </thead>
               <tbody>
                 {Object.keys(rooms).filter(rid => rid !== roomId).length ? (
                   Object.entries(rooms).filter(([rid]) => rid !== roomId).map(([rid, r], i) => (<tr key={i}>
                     <td>{r.wins2win}</td>
-                    <td>{r.status === "running" ? "🟢" : "🔴"}</td>
-                    <td>{Object.keys(r.players).length}/{r.rsize}</td>
+                    <td className={r.status === "running" ? "win" : Object.keys(r.players).length === r.rsize ? "lose" : ""}>
+                      {Object.keys(r.players).length}/{r.rsize}
+                    </td>
                     <td>
                       <div className="button_container" style={{padding: "0"}}>
                         {Object.entries(r.players).map(([k, v], j) => (
                           <div key={`${i}-${j}`} className="circle_wrapper" onClick={() => setSpecPlayerId(k)}
-                            style={{cursor: "pointer", border: `2px solid ${v.status === "ready" ? "#0F0" : "#F00"}` }}>
+                            style={{cursor: "pointer", width:"3.3vh", height:"3.3vh", border: `2px solid ${v.status === "ready" ? "#0F0" : "#F00"}` }}>
                             <img src={avatarList[v.avatar]} alt={`${v.name}'s avatar'`}/>
                           </div>
                         ))}
                       </div>
                     </td>
                     <td>
-                      {r.status === "waiting" && Object.keys(r.players).length != r.rsize && (
-                        <button className="button" onClick={() => joinRoom(rid)}>Go</button>
-                      )}
+                      <button className="button" onClick={() => r.status != "running" ? joinRoom(rid) : handleSpecRoomId(rid)}
+                        disabled={r.status != "running" && Object.keys(r.players).length === r.rsize}>
+                        {r.status === "running" ? "👁️" : Object.keys(r.players).length === r.rsize ? "🔒" : "Go"}
+                      </button>
                     </td>
                   </tr>
                   ))) : (
                   <tr>
-                    <td colSpan="5">No available rooms.</td>
+                    <td colSpan="4">No available rooms.</td>
                   </tr>
                 )}
               </tbody>
