@@ -1,6 +1,6 @@
 // frontend/App.js
 
-import React, { useState, useEffect, useRef, useDebugValue } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 import { io } from "socket.io-client";
 
@@ -11,8 +11,6 @@ function App() {
   const [pid, setPid] = useState("");
   const [name, setName] = useState("");
   const [newName, setNewName] = useState("");
-  const nameRef = useRef(name);
-  const [nameError, setNameError] = useState("");
 
   const [editingName, setEditingName] = useState(false);
   const [editingAvatar, setEditingAvatar] = useState(false);
@@ -56,11 +54,6 @@ function App() {
       const storedPid = localStorage.getItem("pid") || generatePid();
       localStorage.setItem("pid", storedPid);
       newSocket.emit("set_pid", { pid: storedPid });
-    });
-    
-    newSocket.on("name_taken", () => {
-      setNameError("Someone is using this name right now");
-      setEditingName(true);
     });
     
     newSocket.on("pid_set", d => {
@@ -157,10 +150,6 @@ function App() {
   useEffect(() => {
     sortTable(playerSort.key, playerSort.direction, playerRoomsHist, setPlayerRoomsHist);
   }, [playerRoomsHist]);
-
-  useEffect(() => {
-    nameRef.current = name;
-  }, [name]);
 
   useEffect(() => {
     setPlayerRoomsHist(Object.fromEntries(Object.entries(roomsHist).filter(([k, v]) => Object.keys(v.players).includes(specPlayerId))));
@@ -282,12 +271,18 @@ function App() {
     console.log(`Joined room ${rid}`);
   };
 
+  const isNewNameError = Nname => {
+    if (Nname.length < 3 || Nname.length > 15) return true;
+    if (Nname === name) return true;
+    if (Object.values(pidPlayer).some(p => p.n === Nname)) return true;
+    if (!/^[a-zA-Z0-9-]+$/.test(Nname)) return true;
+    return false;
+  };
+
   const handleEditingName = () => {
     if (!editingName) return setEditingName(true);
     setEditingName(false);
     const trimmedName = newName.trim();
-    if (!trimmedName) return setNameError("Name cannot be empty");
-    if (/^ai\d+$/i.test(trimmedName)) return setNameError("Name cannot be AI");
     setName(trimmedName);
     socket.emit("edit_name", { old_name: name, new_name: trimmedName });
     console.log(`Name updated to: ${trimmedName}`);
@@ -374,8 +369,17 @@ function App() {
               onChange={e => setNewName(e.target.value)} />) : (name)}
           </div>
           <button className="button" onClick={handleEditingName}
-            disabled={name === newName}>{editingName ? "✔️" : "✏️"}</button>
+            disabled={editingName && isNewNameError(newName)}>{editingName ? "✔️" : "✏️"}</button>
         </div>
+        <div className="text_display">Name rules:</div>
+        {editingName && isNewNameError(newName) && (
+          <ul style={{paddingLeft: "3vh", marginTop: "0.5vh"}}>
+            <li>Not the actual name</li>
+            <li>Not already taken</li>
+            <li>3-15 characters long</li>
+            <li>Alphanumeric with hyphens (a-zA-Z0-9-)</li>
+          </ul>
+        )}
         <div className="button_container">
           <div className="circle_wrapper" style={{ marginRight: "1vh", border: `2px solid ${colors[roomRank]}` }}>
             <img src={avatarList[avatar]} alt="Your Avatar" />
@@ -761,7 +765,7 @@ function App() {
               <img src={avatarList[avatar]} alt="Your Avatar"/>
             </div>
           )}
-          <div className="text_display" style={{ cursor: "pointer", fontSize: "2vh" }}
+          <div className="text_display" style={{ cursor: "pointer"}}
             onClick={() => setSpecPlayerId(pid)}>{name}</div>
           {!["lobby", "running"].includes(gameState) &&
             <button className={displaySettings ? "highlighted_button" : "button"} onClick={toggleSettings}>⚙️</button>

@@ -204,9 +204,16 @@ def handle_edit_name(data):
     old_name = data.get("old_name").strip()
     new_name = data.get("new_name").strip()
 
-    if new_name in [v["n"] for v in pid_player.values()]:
-        socketio.emit("name_taken", room=sid)
-        log.warning(f"Player {old_name} (pid: {pid}) attempted to change name to {new_name}, but it is already taken.")
+    if len(new_name) < 3 or len(new_name) > 15 or new_name == old_name or any(v['n'] == new_name for v in pid_player.values()) or not new_name.isalnum() and '-' not in new_name:
+        if len(new_name) < 3 or len(new_name) > 15:
+            msg = "name must be between 3 and 15 characters"
+        elif new_name == old_name:
+            msg = "name is the same as before"
+        elif any(v['n'] == new_name for v in pid_player.values()):
+            msg = "name is already taken"
+        elif not new_name.isalnum() and '-' not in new_name:
+            msg = "name must be alphanumeric with hyphens"
+        log.warning(f"Player {old_name} (pid: {pid}) tried to update his name to {new_name}, but {msg}.")
         return
 
     pid_player[pid]["n"] = new_name
