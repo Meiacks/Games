@@ -279,3 +279,29 @@ tr:nth-child(odd) td {
   width: 20vh;
   font-size: 2.1vh;
 }
+
+/* C4 */
+
+.grid {
+  border: 1px solid #000;
+}
+
+.row {
+  display: flex;
+}
+
+.cell {
+  width: 5vh;
+  height: 5vh;
+  border: 1px solid #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 4vh;
+}
+
+.halo {
+  text-shadow: 
+    0 0 20px rgba(255, 255, 255, 0.7);
+}

@@ -68,13 +68,7 @@ sid_pid = {}
 def update_db(filename, data):
     key = filename.split("/")[-1].split(".")[0]
     key = next((k for k in ["rooms_hist", "rooms", "players"] if k in key), key)
-    if key == "rooms":
-        pids = {pid for v in data.values() for pid in v["players"]}
-        sids = [sid for sid, pid in sid_pid.items() if pid in pids]
-        if sids:
-            socketio.emit("db_updated", {"key": key, "data": data}, room=sids)
-    else:
-        socketio.emit("db_updated", {"key": key, "data": data})
+    socketio.emit("db_updated", {"key": key, "data": data})
     save_json(filename, data)
 
 def clean_room_from_player(gid, rid, pid):
@@ -148,6 +142,83 @@ def get_result(player_move):
     winning_moves = {move for move in unique_moves if not beaten_by[move] & unique_moves}
     return list(player_move.keys()) if not winning_moves else [
         player for player, move in player_move.items() if move in winning_moves]
+
+def add_room(gid, rid, pid, status):
+    if gid == "rps":
+        rooms[gid][rid] = {"status": status, "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
+            "players": {}, "rounds": [{"index": 1, "winner": None, "steps": []}]}
+    elif gid == "c4":
+        rooms[gid][rid] = {"status": status, "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
+            "players": {}, "rounds": [{"index": 1, "winner": None, "moves": []}],
+            "grid": [[0 for _ in range(7)] for _ in range(6)]}
+    log.info(f"Player (pid: {pid}) created new room {rid}")
+
+def add_player(gid, rid, pid, is_ai, status):
+    room = rooms[gid][rid]
+    if pid not in room["players"]:
+        name = pid_player[pid]["n"]
+        avatar = pid_player[pid]["a"]
+        if gid == "rps":
+            room["players"][pid] = {"team": len(room["players"]) + 1, "is_ai": is_ai, "status": status, "on": True, "cmove": None, "w": 0, "l": 0}
+        else:
+            room["players"][pid] = {"team": len(room["players"]) + 1, "is_ai": is_ai, "status": status, "w": 0, "l": 0}
+        update_db(ROOMS_FILE[gid], rooms[gid])
+    if len(room["players"]) == 1:
+        log.info(f"Player {pid} created room {rid}.")
+    else:
+        log.info(f"{'AI' if is_ai else 'Player'} {pid} joined room {rid}.")
+
+def add_round(gid, rid, cwinner):
+    room = rooms[gid][rid]
+    if gid == "rps":
+        for v in room["players"].values():
+            v["on"] = True
+        room["rounds"].append({"index": len(room["rounds"]) + 1, "winner": None, "steps": []})
+    elif gid == "c4":
+        room["rounds"].append({"index": len(room["rounds"]) + 1, "winner": None, "moves": []})
+        room["grid"] = [[0 for _ in range(7)] for _ in range(6)]
+
+    emit_data = {"rid": rid, "game_over": False, "winner": cwinner}
+    if gid == "rps":
+        socketio.emit("game_result_rps", emit_data, room=rid)
+    elif gid == "c4":
+        socketio.emit("game_result_c4", emit_data, room=rid)
+
+    log.info(f"New round in room {rid}. Current status: {room['players'][cwinner]['w']} wins.")
+
+def game_over(gid, rid):
+    room = rooms[gid][rid]
+    winner = max(room["players"], key=lambda x: room["players"][x]["w"])
+    room["winner"] = winner
+    log.info(f"Game over in room {rid}. Winner: {winner}")
+
+    for k in room["players"]:
+        pstats = pid_player[k].setdefault(gid, {})
+        for stat in ["w", "l"]:
+            pstats.setdefault(stat, 0)
+            pstats[stat] += room["players"][k].get(stat, 0)
+        tot = pstats["w"] + pstats["l"]
+        pstats["r"] = round((pstats["w"] / tot) * 100, 2) if tot > 0 else 0.0
+    update_db(PLAYERS_FILE, pid_player)
+
+    emit_data = {"rid": rid, "game_over": True, "winner": winner}
+    if gid == "rps":
+        socketio.emit("game_result_rps", emit_data, room=rid)
+    elif gid == "c4":
+        socketio.emit("game_result_c4", emit_data, room=rid)
+
+    saved_room = {
+        "date": int(time.time()), "max_spec": room["max_spec"],
+        "players": {key: {k: v[k] for k in ["team", "is_ai", "w", "l"]} for key, v in room["players"].items()}}
+    if gid == "rps":
+        saved_room["rounds"] = [{"index": r["index"], "winner": r["winner"], "steps": r["steps"]} for r in room["rounds"]]
+    elif gid == "c4":
+        saved_room["rounds"] = [{"index": r["index"], "winner": r["winner"], "moves": r["moves"]} for r in room["rounds"]]
+
+    rooms_hist[gid][rid] = saved_room
+    update_db(ROOMS_HIST_FILE[gid], rooms_hist[gid])
+    del rooms[gid][rid]
+    log.info(f"Room {rid} data saved and removed from active rooms.")
 
 @app.route("/avatars/batch")
 def get_all_avatars():
@@ -256,27 +327,18 @@ def handle_create_room(data):
 
     mode = data.get("mode")
     clean_rooms_from_player(pid)
-    name = pid_player.get(pid, {}).get("n")
-    avatar = pid_player.get(pid, {}).get("a")
     rid = "".join(random.choices(string.ascii_letters + string.digits, k=15))
     if mode == "pve":
-        rooms[gid][rid] = {"status": "running", "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
-            "players": {
-                pid: {"team": 1, "is_ai": False, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0},
-                "AI1": {"team": 2, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}},
-            "rounds": [{"index": 1, "steps": [], "winner": None}]}
+        add_room(gid, rid, pid, "running")
+        add_player(gid, rid, pid, False, "ready")
+        add_player(gid, rid, "AI1", True, "ready")
         join_room(rid)
         socketio.emit("game_start", rid, room=rid)
-        log.info(f"Player {name} (pid: {pid}) created new room {rid}")
-        log.info(f"AI1 joined room {rid}. Room is now running.")
     elif mode == "pvp":
-        rooms[gid][rid] = {"status": "waiting", "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
-            "players": {
-                pid: {"team": 1, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}},
-            "rounds": [{"index": 1, "steps": [], "winner": None}]}
+        add_room(gid, rid, pid, "waiting")
+        add_player(gid, rid, pid, False, "waiting")
         join_room(rid)
         socketio.emit("room_created", rid, room=rid)
-        log.info(f"Player {name} (pid: {pid}) created new room {rid}")
     update_db(ROOMS_FILE[gid], rooms[gid])
 
 @socketio.on("join_room")
@@ -298,10 +360,9 @@ def handle_join_room(data):
         log.warning(f"Player (pid: {pid}) attempted to join room {rid}, but it is full.")
         return
 
-    room["players"][pid] = {"team": len(room["players"]) + 1, "is_ai": False, "status": "waiting", "on": True, "cmove": None, "w": 0, "l": 0}
+    add_player(gid, rid, pid, False, "waiting")
     room["status"] = "waiting"
     join_room(rid)
-    log.info(f"Player (pid: {pid}) joined room {rid}. Waiting for both players to be ready.")
     socketio.emit("room_joined", rid, room=rid)
     update_db(ROOMS_FILE[gid], rooms[gid])
 
@@ -338,8 +399,7 @@ def handle_manage_ais(data):
     ais = [k for k, v in players.items() if v["is_ai"]]
     if ai_dif == 1 and len(players) < 5:
         aiid = f"AI{len(ais) + 1}"
-        players[aiid] = {"team": len(players) + 1, "is_ai": True, "status": "ready", "on": True, "cmove": None, "w": 0, "l": 0}
-        log.info(f"{aiid} added to room {rid}.")
+        add_player(gid, rid, aiid, True, "ready")
         update_db(ROOMS_FILE[gid], rooms[gid])
     elif ai_dif == -1 and len(ais):
         aiid = ais[-1]
@@ -404,27 +464,33 @@ def handle_disconnect():
     for gid in rooms:
         update_db(ROOMS_FILE[gid], rooms[gid])
 
-##     ##    ###    ##    ## ######## ##     ##  #######  ##     ## ########
-###   ###   ## ##   ##   ##  ##       ###   ### ##     ## ##     ## ##      
-#### ####  ##   ##  ##  ##   ##       #### #### ##     ## ##     ## ##      
-## ### ## ##     ## #####    ######   ## ### ## ##     ## ##     ## ######  
-##     ## ######### ##  ##   ##       ##     ## ##     ##  ##   ##  ##      
-##     ## ##     ## ##   ##  ##       ##     ## ##     ##   ## ##   ##      
-##     ## ##     ## ##    ## ######## ##     ##  #######     ###    ########
-
 @socketio.on("make_move")
 def handle_make_move(data):
     gid, rid, pid, ep = data.get("gid"), data.get("rid"), sid_pid.get(sid := request.sid), "make_move"
     if not check_pid(sid, pid, ep) or not check_rid(gid, rid, pid, sid, ep) or not check_pid_in_room(gid, rid, pid, sid, ep):
         return
-
+    
+    move = data.get("move")
     room = rooms[gid][rid]
     if room["status"] != "running":
         socketio.emit("warning", {"message": "Game is not running"}, room=sid)
-        log.warning(f"Player (pid: {pid}) tried to make a move in room {rid}, but game is not running.")
+        log.warning(f"Player (pid: {pid}) tried to make a move in room {rid}, but game {gid} is not running.")
         return
 
-    move = data.get("move")    
+    if gid == "rps":
+        handle_rps_move(gid, rid, pid, room, move)
+    elif gid == "c4":
+        handle_c4_move(gid, rid, pid, room, move)
+
+########  ########   ###### 
+##     ## ##     ## ##    ##
+##     ## ##     ## ##      
+########  ########   ###### 
+##   ##   ##              ##
+##    ##  ##        ##    ##
+##     ## ##         ###### 
+
+def handle_rps_move(gid, rid, pid, room, move):
     room["players"][pid]["cmove"] = move
     log.info(f"Player (pid: {pid}) in room {rid} made move: {move}")
     for aiid in {k for k, v in room["players"].items() if v["is_ai"]}:
@@ -445,8 +511,8 @@ def handle_make_move(data):
         # new step
         if 1 < len(cplayers):
             if not all(v["is_ai"] for k, v in room["players"].items() if k in cplayers):
-                emit_data = {"rid": rid, "game_over": False, "winner": None, "rounds": room["rounds"]}
-                socketio.emit("game_result", emit_data, room=rid)
+                emit_data = {"rid": rid, "game_over": False, "winner": None}
+                socketio.emit("game_result_rps", emit_data, room=rid)
                 log.info(f"New step in room {rid}. Remaining players: {cplayers}")
                 update_db(ROOMS_FILE[gid], rooms[gid])
                 return
@@ -466,6 +532,7 @@ def handle_make_move(data):
                         v["cmove"] = None
 
         cwinner = cplayers[0]
+
         room["rounds"][-1]["winner"] = cwinner
         room["players"][cwinner]["w"] += 1
         for k in room["players"]:
@@ -474,42 +541,86 @@ def handle_make_move(data):
 
         # new round
         if room["players"][cwinner]["w"] != room["wins2win"]:
-            for v in room["players"].values():
-                v["on"] = True
-            room["rounds"].append({"index": len(room["rounds"]) + 1, "steps": [], "winner": None})
-            emit_data = {"rid": rid, "game_over": False, "winner": cwinner, "rounds": room["rounds"]}
-            socketio.emit("game_result", emit_data, room=rid)
-            log.info(f"New round in room {rid}. Current status: {room['players'][cwinner]['w']} wins.")
+            add_round(gid, rid, cwinner)
 
         # game over
         else:
-            winner = max(room["players"], key=lambda x: room["players"][x]["w"])
-            room["winner"] = winner
-            room["status"] = "over"
-            log.info(f"Game over in room {rid}. Winner: {winner}")
+            game_over(gid, rid)
 
-            for k in room["players"]:
-                pstats = pid_player[k].setdefault(gid, {})
-                for stat in ["w", "l"]:
-                    pstats.setdefault(stat, 0)
-                    pstats[stat] += room["players"][k].get(stat, 0)
-                tot = pstats["w"] + pstats["l"]
-                pstats["r"] = round((pstats["w"] / tot) * 100, 2) if tot > 0 else 0.0
-            update_db(PLAYERS_FILE, pid_player)
+    update_db(ROOMS_FILE[gid], rooms[gid])
 
-            emit_data = {"rid": rid, "game_over": True, "winner": winner, "rounds": room["rounds"]}
-            socketio.emit("game_result", emit_data, room=rid)
+ ######  ##       
+##    ## ##    ## 
+##       ##    ## 
+##       ##    ## 
+##       #########
+##    ##       ## 
+ ######        ## 
 
-            rooms_hist[gid][rid] = {
-                "date": int(time.time()), "max_spec": room["max_spec"],
-                "players": {key: {k: v[k] for k in ["team", "is_ai", "w", "l"]} for key, v in room["players"].items()},
-                "rounds": [{"index": r["index"], "winner": r["winner"], "steps": r["steps"]} for r in room["rounds"]]}
-            update_db(ROOMS_HIST_FILE[gid], rooms_hist[gid])
-            del rooms[gid][rid]
-            update_db(ROOMS_FILE[gid], rooms[gid])
-            log.info("Room history updated.")
-            log.info(f"Room {rid} data saved and removed from active rooms.")
-            return
+def check_win(grid, player):
+    for row in range(6):  # ─
+        for col in range(4):
+            if all(grid[row][col + i] == player for i in range(4)):
+                return True
+    for col in range(7):  # |
+        for row in range(3):
+            if all(grid[row + i][col] == player for i in range(4)):
+                return True
+    for row in range(3, 6):  # /
+        for col in range(4):
+            if all(grid[row - i][col + i] == player for i in range(4)):
+                return True
+    for row in range(3):  # \
+        for col in range(4):
+            if all(grid[row + i][col + i] == player for i in range(4)):
+                return True
+
+def is_draw(grid):
+    return all(cell != 0 for row in grid for cell in row)
+
+def add_move(room, grid, move, player):
+    for row in reversed(grid):
+        if row[move] == 0:
+            row[move] = player
+            room["rounds"][-1]["moves"].append(move)
+            return True
+
+def handle_c4_move(gid, rid, pid, room, move):
+    go = False
+    p1, p2 = list(room["players"])
+    move_index = 1 if pid == p1 else 2
+    grid = room["grid"]
+    if add_move(room, grid, move, move_index):
+        go = check_win(grid, move_index) or is_draw(grid)
+
+    if not go and any(v["is_ai"] for v in room["players"].values()):
+        available = [c for c in range(7) if grid[0][c] == 0]
+        if available:
+            ai_move = random.choice(available)
+            if add_move(room, grid, ai_move, 2):
+                go = check_win(grid, 2) or is_draw(grid)
+
+    if not go:
+        emit_data = {"rid": rid, "game_over": False, "winner": None}
+        socketio.emit("game_result_c4", emit_data, room=rid)
+    
+    else:
+        len_moves = len(room["rounds"][-1]["moves"])
+        cwinner = p1 if len_moves % 2 else p2
+
+        room["rounds"][-1]["winner"] = cwinner
+        room["players"][cwinner]["w"] += 1
+        for k in room["players"]:
+            if k != cwinner:
+                room["players"][k]["l"] += 1
+
+        # new round
+        if room["players"][cwinner]["w"] != room["wins2win"]:
+            add_round(gid, rid, cwinner)
+
+        # game over
+        else:
+            game_over(gid, rid)
 
     update_db(ROOMS_FILE[gid], rooms[gid])
 
