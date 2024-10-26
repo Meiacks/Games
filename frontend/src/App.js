@@ -683,10 +683,6 @@ function App() {
   }, [moves]);
 
   useEffect(() => {
-    if (!specRid) {
-      setMovesCrop(0);
-      setNavRound(0);
-    };
     const room = roomsHist[specRid] || rooms[specRid] || rooms[rid];
     if (!room || !room.rounds || !moves) return;
     const lastRound = room.rounds[room.rounds.length - 1 - navRound].moves;
@@ -697,6 +693,13 @@ function App() {
   useEffect(() => {
     setMovesCrop(0);
   }, [navRound]);
+
+  useEffect(() => {
+    if (!specRid) {
+      setMovesCrop(0);
+      setNavRound(0);
+    };
+  }, [specRid]);
 
   const renderRoomTableC4 = () => {
     const room = roomsHist[specRid] || rooms[specRid] || rooms[rid];

@@ -5,7 +5,7 @@ from eventlet.event import Event
 from eventlet.semaphore import Semaphore
 eventlet.monkey_patch()
 
-import os, json, time, base64, random, string, logging, threading
+import os, math, json, time, base64, random, string, logging, threading
 from flask import Flask, jsonify, request, Response, make_response, send_from_directory
 from flask_cors import CORS
 from flask_compress import Compress
@@ -144,6 +144,7 @@ def get_result(player_move):
         player for player, move in player_move.items() if move in winning_moves]
 
 def add_room(gid, rid, pid, status):
+
     if gid == "rps":
         rooms[gid][rid] = {"status": status, "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
             "players": {}, "rounds": [{"index": 1, "winner": None, "steps": []}]}
@@ -151,6 +152,7 @@ def add_room(gid, rid, pid, status):
         rooms[gid][rid] = {"status": status, "wins2win": 2, "rsize": 2, "max_spec": 0, "spec": [],
             "players": {}, "rounds": [{"index": 1, "winner": None, "moves": []}],
             "grid": [[0 for _ in range(7)] for _ in range(6)]}
+
     log.info(f"Player (pid: {pid}) created new room {rid}")
 
 def add_player(gid, rid, pid, is_ai, status):
@@ -158,18 +160,21 @@ def add_player(gid, rid, pid, is_ai, status):
     if pid not in room["players"]:
         name = pid_player[pid]["n"]
         avatar = pid_player[pid]["a"]
+
         if gid == "rps":
             room["players"][pid] = {"team": len(room["players"]) + 1, "is_ai": is_ai, "status": status, "on": True, "cmove": None, "w": 0, "l": 0}
-        else:
+        elif gid == "c4":
             room["players"][pid] = {"team": len(room["players"]) + 1, "is_ai": is_ai, "status": status, "w": 0, "l": 0}
+
         update_db(ROOMS_FILE[gid], rooms[gid])
     if len(room["players"]) == 1:
         log.info(f"Player {pid} created room {rid}.")
     else:
         log.info(f"{'AI' if is_ai else 'Player'} {pid} joined room {rid}.")
 
-def add_round(gid, rid, cwinner):
+def add_round(gid, rid, rwinner, cwinner):
     room = rooms[gid][rid]
+
     if gid == "rps":
         for v in room["players"].values():
             v["on"] = True
@@ -178,13 +183,14 @@ def add_round(gid, rid, cwinner):
         room["rounds"].append({"index": len(room["rounds"]) + 1, "winner": None, "moves": []})
         room["grid"] = [[0 for _ in range(7)] for _ in range(6)]
 
-    emit_data = {"rid": rid, "game_over": False, "winner": cwinner}
+    emit_data = {"rid": rid, "game_over": False, "winner": rwinner}
+
     if gid == "rps":
         socketio.emit("game_result_rps", emit_data, room=rid)
     elif gid == "c4":
         socketio.emit("game_result_c4", emit_data, room=rid)
 
-    log.info(f"New round in room {rid}. Current status: {room['players'][cwinner]['w']} wins.")
+    log.info(f"New round in room {rid}. Current status: {cwinner} wins.")
 
 def game_over(gid, rid):
     room = rooms[gid][rid]
@@ -202,6 +208,7 @@ def game_over(gid, rid):
     update_db(PLAYERS_FILE, pid_player)
 
     emit_data = {"rid": rid, "game_over": True, "winner": winner}
+
     if gid == "rps":
         socketio.emit("game_result_rps", emit_data, room=rid)
     elif gid == "c4":
@@ -210,6 +217,7 @@ def game_over(gid, rid):
     saved_room = {
         "date": int(time.time()), "max_spec": room["max_spec"],
         "players": {key: {k: v[k] for k in ["team", "is_ai", "w", "l"]} for key, v in room["players"].items()}}
+
     if gid == "rps":
         saved_room["rounds"] = [{"index": r["index"], "winner": r["winner"], "steps": r["steps"]} for r in room["rounds"]]
     elif gid == "c4":
@@ -219,6 +227,20 @@ def game_over(gid, rid):
     update_db(ROOMS_HIST_FILE[gid], rooms_hist[gid])
     del rooms[gid][rid]
     log.info(f"Room {rid} data saved and removed from active rooms.")
+
+def check_round_and_game_over(gid, rid, room, rwinner):
+    if rwinner:
+        room["rounds"][-1]["winner"] = rwinner
+        room["players"][rwinner]["w"] += 1
+        for k in room["players"]:
+            if k != rwinner:
+                room["players"][k]["l"] += 1
+
+    cwinner = max(room["players"], key=lambda x: room["players"][x]["w"])
+    if room["players"][cwinner]["w"] != room["wins2win"]:
+        add_round(gid, rid, rwinner, cwinner)
+    else:
+        game_over(gid, rid)
 
 @app.route("/avatars/batch")
 def get_all_avatars():
@@ -436,7 +458,7 @@ def handle_update_spec(data):
         if rooms[gid][rid]["max_spec"] < len(rooms[gid][rid]["spec"]):
             rooms[gid][rid]["max_spec"] = len(rooms[gid][rid]["spec"])
     else:
-        rooms[gid][rid]["spec"].remove(pid)
+        rooms.get(gid, {}).get(rid, {}).get("spec", set()).discard(pid)
     log.info(f"Player (pid: {pid}) in room {rid} {'join' if new_spec else 'quit'} spec.")
     update_db(ROOMS_FILE[gid], rooms[gid])
 
@@ -531,23 +553,184 @@ def handle_rps_move(gid, rid, pid, room, move):
                         v["on"] = k in cplayers
                         v["cmove"] = None
 
-        cwinner = cplayers[0]
-
-        room["rounds"][-1]["winner"] = cwinner
-        room["players"][cwinner]["w"] += 1
-        for k in room["players"]:
-            if k != cwinner:
-                room["players"][k]["l"] += 1
-
-        # new round
-        if room["players"][cwinner]["w"] != room["wins2win"]:
-            add_round(gid, rid, cwinner)
-
-        # game over
-        else:
-            game_over(gid, rid)
+        rwinner = cplayers[0]
+        check_round_and_game_over(gid, rid, room, rwinner)
 
     update_db(ROOMS_FILE[gid], rooms[gid])
+
+   ###    ####     ######  ##       
+  ## ##    ##     ##    ## ##    ## 
+ ##   ##   ##     ##       ##    ## 
+##     ##  ##     ##       ##    ## 
+#########  ##     ##       #########
+##     ##  ##     ##    ##       ## 
+##     ## ####     ######        ## 
+
+def check_win(grid, move_index):
+    p = move_index
+    g = grid
+    r0, r1, r2, r3, r4, r5 = g[0], g[1], g[2], g[3], g[4], g[5]
+    for r in [r0, r1, r2, r3, r4, r5]:  # ─
+        if (r[0] == p and r[1] == p and r[2] == p and r[3] == p):
+            return True
+        if (r[1] == p and r[2] == p and r[3] == p and r[4] == p):
+            return True
+        if (r[2] == p and r[3] == p and r[4] == p and r[5] == p):
+            return True
+        if (r[3] == p and r[4] == p and r[5] == p and r[6] == p):
+            return True
+    for c in range(7):  # |
+        if (r0[c] == p and r1[c] == p and r2[c] == p and r3[c] == p):
+            return True
+        if (r1[c] == p and r2[c] == p and r3[c] == p and r4[c] == p):
+            return True
+        if (r2[c] == p and r3[c] == p and r4[c] == p and r5[c] == p):
+            return True
+    for c in range(4):  # /
+        if (r3[c] == p and r2[c+1] == p and r1[c+2] == p and r0[c+3] == p):
+            return True
+        if (r4[c] == p and r3[c+1] == p and r2[c+2] == p and r1[c+3] == p):
+            return True
+        if (r5[c] == p and r4[c+1] == p and r3[c+2] == p and r2[c+3] == p):
+            return True
+    for c in range(4):  # \
+        if (r0[c] == p and r1[c+1] == p and r2[c+2] == p and r3[c+3] == p):
+            return True
+        if (r1[c] == p and r2[c+1] == p and r3[c+2] == p and r4[c+3] == p):
+            return True
+        if (r2[c] == p and r3[c+1] == p and r4[c+2] == p and r5[c+3] == p):
+            return True
+
+def is_draw(grid):
+    return all(cell != 0 for row in grid for cell in row)
+
+def evaluate_window(window, piece):
+    score = 0
+    opp_piece = 1 if piece == 2 else 2
+    if window.count(piece) == 4:
+        score += 100
+    elif window.count(piece) == 3 and window.count(0) == 1:
+        score += 5
+    elif window.count(piece) == 2 and window.count(0) == 2:
+        score += 2
+    if window.count(opp_piece) == 3 and window.count(0) == 1:
+        score -= 4
+    return score
+
+def score_position(grid, piece):
+    score = 0
+    center_array = [row[7//2] for row in grid]
+    center_count = center_array.count(piece)
+    score += center_count * 3 # center column
+    for r in range(6):
+        row_array = grid[r]
+        for c in range(7 - 3):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, piece)  # ─
+    for c in range(7):
+        col_array = [grid[r][c] for r in range(6)]
+        for r in range(6 - 3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, piece)  # |
+    for r in range(6 - 3):
+        for c in range(7 - 3):
+            window = [grid[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)  # /
+    for r in range(3, 6):
+        for c in range(7 - 3):
+            window = [grid[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)  # \
+    return score
+
+def is_terminal_node(grid):
+    return check_win(grid, 1) or check_win(grid, 2) or is_draw(grid)
+
+def get_valid_locations(grid):
+    return [c for c in range(7) if grid[0][c] == 0]
+
+def get_valid_locations_ordered(grid):
+    center = 7 // 2
+    valid_locations = get_valid_locations(grid)
+    ordered = sorted(valid_locations, key=lambda x: abs(x - center))
+    return ordered
+
+def add_move_in_place(grid, col, piece):
+    for row in reversed(grid):
+        if row[col] == 0:
+            row[col] = piece
+            return True
+    return False
+
+def remove_move_in_place(grid, col):
+    for row in grid:
+        if row[col] != 0:
+            row[col] = 0
+            return True
+    return False
+
+def minimax(transposition_table, grid, depth, alpha, beta, maximizingPlayer, ai_piece, player_piece):
+    grid_key = str(grid)
+    if grid_key in transposition_table:
+        return transposition_table[grid_key]
+
+    valid_locations = get_valid_locations_ordered(grid)
+    is_terminal = is_terminal_node(grid)
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if check_win(grid, ai_piece):
+                return (None, 100000000000000)
+            elif check_win(grid, player_piece):
+                return (None, -10000000000000)
+            else:  # Game is over, no more valid moves
+                return (None, 0)
+        else:  # Depth is zero
+            return (None, score_position(grid, ai_piece))
+
+    if maximizingPlayer:
+        value = -math.inf
+        best_column = random.choice(valid_locations)
+        for col in valid_locations:
+            if add_move_in_place(grid, col, ai_piece):
+                new_score = minimax(transposition_table, grid, depth-1, alpha, beta, False, ai_piece, player_piece)[1]
+                remove_move_in_place(grid, col)
+                if new_score > value:
+                    value = new_score
+                    best_column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+        transposition_table[grid_key] = (best_column, value)
+        return best_column, value
+
+    else:  # Minimizing player
+        value = math.inf
+        best_column = random.choice(valid_locations)
+        for col in valid_locations:
+            if add_move_in_place(grid, col, player_piece):
+                new_score = minimax(transposition_table, grid, depth-1, alpha, beta, True, ai_piece, player_piece)[1]
+                remove_move_in_place(grid, col)
+                if new_score < value:
+                    value = new_score
+                    best_column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+        transposition_table[grid_key] = (best_column, value)
+        return best_column, value
+
+def add_move_temp(grid, move, move_index):
+    for row in reversed(grid):
+        if row[move] == 0:
+            row[move] = move_index
+            return True
+    return False
+
+def get_ai_move(grid, ai_piece, depth=5):
+    opponent_index = 1 if ai_piece == 2 else 2
+    column, minimax_score = minimax({}, grid, depth, -math.inf, math.inf, True, ai_piece, opponent_index)
+    if column is None:
+        column = random.choice(get_valid_locations(grid))
+    return column
 
  ######  ##       
 ##    ## ##    ## 
@@ -557,70 +740,40 @@ def handle_rps_move(gid, rid, pid, room, move):
 ##    ##       ## 
  ######        ## 
 
-def check_win(grid, player):
-    for row in range(6):  # ─
-        for col in range(4):
-            if all(grid[row][col + i] == player for i in range(4)):
+def add_move(room, pid, grid, move, move_index):
+    if len(room["rounds"][-1]["moves"]) % 2 == move_index - 1:
+        for row in reversed(grid):
+            if row[move] == 0:
+                row[move] = move_index
+                room["rounds"][-1]["moves"].append(move)
+                log.info(f"Player (pid: {pid}) (move_index: {move_index}) made move: {move}")
                 return True
-    for col in range(7):  # |
-        for row in range(3):
-            if all(grid[row + i][col] == player for i in range(4)):
-                return True
-    for row in range(3, 6):  # /
-        for col in range(4):
-            if all(grid[row - i][col + i] == player for i in range(4)):
-                return True
-    for row in range(3):  # \
-        for col in range(4):
-            if all(grid[row + i][col + i] == player for i in range(4)):
-                return True
-
-def is_draw(grid):
-    return all(cell != 0 for row in grid for cell in row)
-
-def add_move(room, grid, move, player):
-    for row in reversed(grid):
-        if row[move] == 0:
-            row[move] = player
-            room["rounds"][-1]["moves"].append(move)
-            return True
 
 def handle_c4_move(gid, rid, pid, room, move):
-    go = False
+    rwinner = None
     p1, p2 = list(room["players"])
     move_index = 1 if pid == p1 else 2
     grid = room["grid"]
-    if add_move(room, grid, move, move_index):
-        go = check_win(grid, move_index) or is_draw(grid)
 
-    if not go and any(v["is_ai"] for v in room["players"].values()):
-        available = [c for c in range(7) if grid[0][c] == 0]
-        if available:
-            ai_move = random.choice(available)
-            if add_move(room, grid, ai_move, 2):
-                go = check_win(grid, 2) or is_draw(grid)
+    if add_move(room, pid, grid, move, move_index) and check_win(grid, move_index):
+        rwinner = pid
 
-    if not go:
+    if not rwinner and not is_draw(grid) and "AI1" in room["players"]:
+
+        t = time.time()
+        ai_index = 1 if "AI1" == p1 else 2
+        ai_move = get_ai_move(grid, ai_index, 5)
+        log.info(f"AI1 made move: {ai_move} in {round(time.time() - t, 3)}s")
+
+        if add_move(room, "AI1", grid, ai_move, ai_index) and check_win(grid, ai_index):
+            rwinner = "AI1"
+
+    if not rwinner and not is_draw(grid):
         emit_data = {"rid": rid, "game_over": False, "winner": None}
         socketio.emit("game_result_c4", emit_data, room=rid)
     
-    else:
-        len_moves = len(room["rounds"][-1]["moves"])
-        cwinner = p1 if len_moves % 2 else p2
-
-        room["rounds"][-1]["winner"] = cwinner
-        room["players"][cwinner]["w"] += 1
-        for k in room["players"]:
-            if k != cwinner:
-                room["players"][k]["l"] += 1
-
-        # new round
-        if room["players"][cwinner]["w"] != room["wins2win"]:
-            add_round(gid, rid, cwinner)
-
-        # game over
-        else:
-            game_over(gid, rid)
+    if rwinner or is_draw(grid):
+        check_round_and_game_over(gid, rid, room, rwinner)
 
     update_db(ROOMS_FILE[gid], rooms[gid])
 
