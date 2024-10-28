@@ -13,6 +13,8 @@ function App() {
   const [displayLead, setDisplayLead] = useState(false);
   const [displayOthersRooms, setDisplayOthersRooms] = useState(true);
   const [displaySettings, setDisplaySettings] = useState(false);
+  const [isLinkValid, setIsLinkValid] = useState(false);
+  const [isLinkValidated, setIsLinkValidated] = useState(false);
 
   const [gameState, setGameState] = useState("main");
 
@@ -87,6 +89,11 @@ function App() {
       console.log(`New room created: ${d}`);
     });
 
+    newSocket.on("link_checked", d => {
+      setRooms(d.rooms);
+      setIsLinkValid(d.isLinkValid);
+    });
+
     newSocket.on("room_joined", d => {
       setRid(d);
       setGameState("lobby");
@@ -97,6 +104,11 @@ function App() {
       setRid(d);
       setGameState("running");
       console.log(`Game started in room ${d}`);
+    });
+
+    newSocket.on("help_move", d => {
+      setHelpMove(d);
+      console.log(`Help move: ${d}`);
     });
 
     newSocket.on("player_left", d =>
@@ -167,12 +179,12 @@ function App() {
   }, [playerRoomsHist]);
 
   useEffect(() => {
-    setPlayerRoomsHist(Object.fromEntries(Object.entries(roomsHist).filter(([k, v]) => Object.keys(v.players).includes(specPid))));
+    setPlayerRoomsHist(Object.fromEntries(Object.entries(roomsHist).filter(([k, v]) => specPid in v.players)));
   }, [specPid, roomsHist]);
 
   useEffect(() => {
     if (tableEndRef.current) {
-      tableEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      tableEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [rooms]);
 
@@ -192,21 +204,35 @@ function App() {
   }, [socket]);
 
   useEffect(() => {
-    const roomFromURL = new URLSearchParams(window.location.search).get('room');
-    if (!roomFromURL || !socket) return;
-    const handleJoinRoomFromURL = () => {
-      setRid(roomFromURL);
-      joinGame(rooms[roomFromURL]?.gid, "lobby");
-      socket.emit("join_room", { gid: gid, rid: roomFromURL });
-      console.log(`Auto-joining room from URL: ${roomFromURL}`);
+    if (isLinkValidated) return;
+    const params = new URLSearchParams(window.location.search);
+    const gidFromURL = params.get("gid");
+    const ridFromURL = params.get("room");
+
+    gidFromURL && ridFromURL && socket?.emit("check_link", { gid: gidFromURL, rid: ridFromURL });
+
+    console.log(`isLinkValid: ${isLinkValid}`);
+    if (!isLinkValid) return;
+    const handleJoinRidFromURL = () => {
+      if (rooms[ridFromURL]?.status != "waiting" || rooms[ridFromURL]?.rsize <= Object.keys(rooms[ridFromURL]?.players).length) {
+        setGameState("main");
+        window.history.replaceState({}, document.title, window.location.origin);
+        return console.log(`Room ${ridFromURL} is not available.`);
+      }
+      setGid(gidFromURL);
+      setRid(ridFromURL);
+      joinGame(gidFromURL, "lobby");
+      socket.emit("join_room", { gid: gidFromURL, rid: ridFromURL });
+      console.log(`Auto-joining room from URL: ${ridFromURL}`);
       window.history.replaceState({}, document.title, window.location.origin);
+      setIsLinkValidated(true);
     };
     if (socket.connected) {
-      handleJoinRoomFromURL();
+      handleJoinRidFromURL();
     } else {
-      socket.once("connect", handleJoinRoomFromURL);
+      socket.once("connect", handleJoinRidFromURL);
     }
-  }, [socket]);
+  }, [socket, rooms, isLinkValid]);
 
   // ######## ##     ## ##    ##
   // ##       ##     ## ###   ##
@@ -217,12 +243,12 @@ function App() {
   // ##        #######  ##    ##
 
   const generatePid = () => {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     return Array.from({ length: 10 }, () => characters[Math.floor(Math.random() * characters.length)]).join("");
   };
 
-  const startGame = mode => {
-    socket?.emit("create_room", { gid: gid, mode: mode });
+  const startGame = (mode, lvl) => {
+    socket?.emit("create_room", { gid: gid, mode: mode, lvl: lvl });
   };
 
   const joinRoom = roomId => {
@@ -231,6 +257,7 @@ function App() {
     }
     socket.emit("join_room", { gid: gid, rid: roomId });
     setRid(roomId);
+    setIsReady(false);
     setGameState("lobby");
     console.log(`Joined room ${roomId}`);
   };
@@ -370,6 +397,15 @@ function App() {
     }
   };
 
+  const handleSpecPid = playerId => {
+    if (gameState != "main" && !playerId) {
+      return setSpecPid(playerId);
+    }
+    if (gameState != "main" && gid in pidPlayer[playerId]) {
+      return setSpecPid(playerId);
+    }
+  };
+
   const handleSpecRid = roomId => {
     !roomId && socket.emit("update_spec", { gid: gid, rid: specRid, new_spec: false });
     rooms[roomId]?.status === "running" && socket.emit("update_spec", { gid: gid, rid: roomId, new_spec: true });
@@ -399,6 +435,220 @@ function App() {
       sortDict(newKey, newDirection, table, setTable);
     }    
   };
+
+  //  ######  ##       
+  // ##    ## ##    ## 
+  // ##       ##    ## 
+  // ##       ##    ## 
+  // ##       #########
+  // ##    ##       ## 
+  //  ######        ## 
+
+  const [grid, setGrid] = useState([]);
+  const [moves, setMoves] = useState([]);
+  const [movesCrop, setMovesCrop] = useState(0);
+  const [navRound, setNavRound] = useState(0);
+  const [helpMove, setHelpMove] = useState(null);
+  const [winningSequence, setWinningSequence] = useState(null);
+
+  useEffect(() => {
+    if (!moves) return;
+    setGrid(getGridFromMoves(moves));
+  }, [moves]);
+
+  useEffect(() => {
+    const room = roomsHist[specRid] || rooms[specRid] || rooms[rid];
+    if (!room || !room.rounds || !moves) return;
+    const lastRound = room.rounds[room.rounds.length - 1 - navRound].moves;
+    const croppedMoves = movesCrop === 0 ? lastRound : lastRound.slice(0, lastRound.length - movesCrop);
+    setMoves(croppedMoves);
+  }, [roomsHist, specRid, rooms, rid, movesCrop, navRound]);
+
+  useEffect(() => {
+    setMovesCrop(0);
+  }, [navRound]);
+
+  useEffect(() => {
+    if (!specRid) {
+      setMovesCrop(0);
+      setNavRound(0);
+    };
+  }, [specRid]);
+
+  useEffect(() => {
+    if (gid != "c4" && !(roomsHist[specRid] || rooms[specRid] || rooms[rid])) return
+    const win = detectWin(grid, 4); // Adjust the second parameter if you want to handle up to 7 connected pieces
+    if (win) {
+      setWinningSequence(win);
+      console.log("Win detected:", win);
+    } else {
+      setWinningSequence(null);
+    }
+  }, [grid, gid, rid]);
+
+  const handleMoveC4 = col => {
+    setHelpMove(null);
+    socket.emit("make_move", { gid: gid, rid: rid, move: col });
+  };
+
+  const getGridFromMoves = m => {
+    const newGrid = Array.from({ length: 6 }, () => Array(7).fill(0));
+    m.forEach((col, i) => {
+      const player = i % 2 === 0 ? 1 : 2;
+      for (let row = 5; row >= 0; row--) {
+        if (newGrid[row][col] === 0) {
+          newGrid[row][col] = player;
+          break;
+        }
+      }
+    });
+    return newGrid;
+  }
+
+  const detectWin = (grid, minConnected = 4) => {
+    const numRows = grid.length;
+    const numCols = grid[0].length;
+    const directions = [
+      { dr: 0, dc: 1 },  // ─
+      { dr: 1, dc: 0 },  // |
+      { dr: 1, dc: 1 },  // \
+      { dr: 1, dc: -1 }, // /
+    ];
+
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < numCols; c++) {
+        const player = grid[r][c];
+        if (player === 0) continue; // Empty cell
+
+        for (let { dr, dc } of directions) {
+          let connected = [{ r, c }];
+          let nr = r + dr;
+          let nc = c + dc;
+
+          while (
+            nr >= 0 &&
+            nr < numRows &&
+            nc >= 0 &&
+            nc < numCols &&
+            grid[nr][nc] === player
+          ) {
+            connected.push({ r: nr, c: nc });
+            nr += dr;
+            nc += dc;
+          }
+
+          if (connected.length >= minConnected) {
+            return connected; // Return the winning sequence
+          }
+        }
+      }
+    }
+  };
+
+  const Connect4Canvas = React.memo(({ amIFirst, lastCol, lastRow, helpRow }) => {
+    const canvasRef = useRef(null);
+    const UNIT = 35;
+
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext("2d");
+
+      // Clear the entire canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw the grid and pieces
+      for (let r = 0; r < 6; r++) {
+        for (let c = 0; c < 7; c++) {
+          const x = c * UNIT;
+          const y = r * UNIT;
+          ctx.fillStyle = "#333";
+          ctx.fillRect(x, y, UNIT, UNIT);
+          ctx.strokeStyle = "#000";
+          ctx.strokeRect(x, y, UNIT, UNIT);
+
+          // Highlight the last move
+          if (r === lastRow && c === lastCol) {
+            ctx.shadowColor = "#FFF";
+            ctx.shadowBlur = 20;
+          } else {
+            ctx.shadowBlur = 0;
+          }
+
+          // Determine the color of the piece
+          let fillColor = "#333";
+          if (gameState === "running" && r === helpRow && c === helpMove && grid[r][c] === 0) {
+            fillColor = "#0F0";
+          } else if (grid[r][c] === 1) {
+            fillColor = "#F00";
+          } else if (grid[r][c] === 2) {
+            fillColor = "#FD0";
+          }
+
+          if (fillColor !== "#333") {
+            ctx.beginPath();
+            const padding = 4;
+            ctx.arc(x + UNIT / 2, y + UNIT / 2, (UNIT / 2) - padding, 0, 2 * Math.PI);
+            ctx.fillStyle = fillColor;
+            ctx.fill();
+            ctx.closePath();
+          }
+
+          ctx.shadowBlur = 0;
+        }
+      }
+
+      // Draw the winning line if there's a winning sequence
+      if (winningSequence && winningSequence.length >= 4) {
+        ctx.strokeStyle = "#00FF00"; // Green line for the win
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+
+        // Calculate the center positions of the first and last pieces
+        const first = winningSequence[0];
+        const last = winningSequence[winningSequence.length - 1];
+        const startX = first.c * UNIT + UNIT / 2;
+        const startY = first.r * UNIT + UNIT / 2;
+        const endX = last.c * UNIT + UNIT / 2;
+        const endY = last.r * UNIT + UNIT / 2;
+
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.closePath();
+
+        // Optional: Highlight each winning piece
+        winningSequence.forEach(piece => {
+          const x = piece.c * UNIT + UNIT / 2;
+          const y = piece.r * UNIT + UNIT / 2;
+          ctx.beginPath();
+          ctx.arc(x, y, (UNIT / 2) - 4, 0, 2 * Math.PI);
+          ctx.strokeStyle = "#00FF00";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.closePath();
+        });
+      }
+
+    }, [grid, lastRow, lastCol, helpRow, helpMove, winningSequence]);
+
+    const handleClick = (e) => {
+      const canvas = canvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const col = Math.floor(x / UNIT);
+      if (col >= 0 && col < 7) {
+        const isPlayerTurn = grid.reduce((acc, row) => acc + row.filter(cell => cell !== 0).length, 0) % 2 === (amIFirst ? 0 : 1);
+        if (gameState === "running" && !navRound && isPlayerTurn) {
+          handleMoveC4(col);
+        }
+      }
+    };
+
+    return (
+      <canvas ref={canvasRef} onClick={handleClick} width={7 * UNIT} height={6 * UNIT}
+        style={{ border: "2px solid #000", cursor: "pointer" }} />
+    );
+  });
 
   // ########  ######## ##    ## ########  ######## ######## 
   // ##     ## ##       ###   ## ##     ## ##       ##     ##
@@ -469,14 +719,14 @@ function App() {
     if (!specPid || !pidPlayer?.[specPid] || !playerRoomsHist) return <div className="text_display">Loading...</div>;
     const specPlayer = pidPlayer[specPid];
     const maxLen = Math.max(0, ...Object.values(playerRoomsHist).map(g => Object.keys(g.players || {}).length));
-    const live = Object.keys(rooms).find(roomId => specPid in rooms[roomId]?.players);
+    const live = Object.keys(rooms).find(roomId => specPid in rooms[roomId]?.players && rooms[roomId].status === "running");
     return <>
       <div className="main_container">
         {!specPlayer?.a ? (<div className="text_display">Loading...</div>) : (
           <div className="table_menu_container">
             <div className="button_container">
               <div className="circle_wrapper" style={{ border: `2px solid ${colors[0]}` }}>
-                <img src={avatarList[specPlayer.a]} alt={`${specPlayer.n}'s Avatar`} />
+                <img src={avatarList[specPlayer.a]} alt={`${specPlayer.n}'s avatar`} />
               </div>
               <div className="text_display">{specPlayer.n}</div>
             </div>
@@ -498,15 +748,15 @@ function App() {
                 </thead>
                 <tbody>
                   {live && (<tr>
-                    <td onClick={() => handleSpecRid(live)} style={{ cursor: "pointer" }}>👁️</td>
+                    <td onClick={() => handleSpecRid(live)} style={{ cursor: "pointer" }}>{Object.keys(rooms[live].spec).length || ""}👁️</td>
                     {Object.entries(rooms[live].players).map(([k, v], i) => {
                       const bestw = Math.max(...Object.values(rooms[live].players).map(v => v.w));
                       return (
                         <React.Fragment key={`${i}`}>
-                          <td onClick={() => setSpecPid(k)} style={{ cursor: "pointer", padding: "0" }}>
-                            <img className="avatar" src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s Avatar`} />
+                          <td onClick={() => handleSpecPid(k)} style={{ cursor: "pointer", padding: "0" }}>
+                            <img className="avatar" src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s avatar`} />
                           </td>
-                          <td className={v.w === bestw ? "win" : ""} onClick={() => setSpecPid(k)} style={{ cursor: "pointer" }}>{v.w}</td>
+                          <td className={v.w === bestw ? "win" : ""} onClick={() => handleSpecPid(k)} style={{ cursor: "pointer" }}>{v.w}</td>
                         </React.Fragment>
                       );
                     })}
@@ -525,10 +775,10 @@ function App() {
                         <td onClick={() => handleSpecRid(key)} style={{ cursor: "pointer" }}>📺</td>
                         {players.map(([k, v], j) => (
                           <React.Fragment key={`${i}-${j}`}>
-                            <td onClick={() => setSpecPid(k)} style={{ cursor: "pointer", padding: "0" }}>
-                              <img className="avatar" src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s Avatar`} />
+                            <td onClick={() => handleSpecPid(k)} style={{ cursor: "pointer", padding: "0" }}>
+                              <img className="avatar" src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s avatar`} />
                             </td>
-                            <td className={v.w === bestw ? "win" : ""} onClick={() => setSpecPid(k)} style={{ cursor: "pointer" }}>{v.w}</td>
+                            <td className={v.w === bestw ? "win" : ""} onClick={() => handleSpecPid(k)} style={{ cursor: "pointer" }}>{v.w}</td>
                           </React.Fragment>
                         ))}
                         {Array(maxLen - players.length).fill(0).map((_, idx) => (
@@ -549,7 +799,7 @@ function App() {
       <div className="footer_container">
         <div className="button_container">
           <button className="button" style={{ cursor: "pointer" }}
-            onClick={() => { setSpecPid(null); setPlayerRoomsHist({}) }}>Back</button>
+            onClick={() => { handleSpecPid(null); setPlayerRoomsHist({}) }}>Back</button>
         </div>
       </div>
     </>;
@@ -573,13 +823,13 @@ function App() {
             </thead>
             <tbody>
               {lead && lead.map((p, i) => (
-                <tr key={i} onClick={() => setSpecPid(p.pid)} style={{ cursor: "pointer" }}>
+                <tr key={i} onClick={() => handleSpecPid(p.pid)} style={{ cursor: "pointer" }}>
                   <td className={p.n === name ? "highlighted_text" : ""}>{i + 1}</td>
                   <td className={p.n === name ? "highlighted_text" : ""}>{p.r.toFixed(0)}</td>
                   <td className={p.n === name ? "highlighted_text" : ""}>{p.w}</td>
                   <td className={p.n === name ? "highlighted_text" : ""}>{p.l}</td>
                   <td style={{ padding: "0" }}>
-                    <img src={avatarList[p.a]} className="avatar" alt={`${p.n}'s Avatar`} />
+                    <img src={avatarList[p.a]} className="avatar" alt={`${p.n}'s avatar`} />
                   </td>
                   <td className={p.n === name ? "highlighted_text" : ""}>{p.n}</td>
                 </tr>
@@ -615,7 +865,7 @@ function App() {
             <th>{roomsHist[specRid] ? "📺" : "⏳"}</th>
             {Object.entries(room.players).map(([k, v], i) => (
               <th key={i}>
-                <div className="circle_wrapper" onClick={() => { setSpecPid(k); handleSpecRid(null) }}
+                <div className="circle_wrapper" onClick={() => { handleSpecPid(k); handleSpecRid(null) }}
                   style={{ margin: "0.4vh 0.2vh 0.4vh 0", border: `2px solid ${colors[i]}` }}>
                   <img src={avatarList[v.a || pidPlayer[k].a]} alt={`${k}'s avatar`} />
                 </div>
@@ -654,78 +904,22 @@ function App() {
     </div>;
   };
 
-  const handleMoveC4 = col => {
-    socket.emit("make_move", { gid: gid, rid: rid, move: col });
-  };
-
-  const getGridFromMoves = m => {
-    const newGrid = Array.from({ length: 6 }, () => Array(7).fill(0));
-    m.forEach((col, i) => {
-      const player = i % 2 === 0 ? 1 : 2;
-      for (let row = 5; row >= 0; row--) {
-        if (newGrid[row][col] === 0) {
-          newGrid[row][col] = player;
-          break;
-        }
-      }
-    });
-    return newGrid;
-  }
-
-  const [grid, setGrid] = useState([]);
-  const [moves, setMoves] = useState([]);
-  const [movesCrop, setMovesCrop] = useState(0);
-  const [navRound, setNavRound] = useState(0);
-
-  useEffect(() => {
-    if (!moves) return;
-    setGrid(getGridFromMoves(moves));
-  }, [moves]);
-
-  useEffect(() => {
-    const room = roomsHist[specRid] || rooms[specRid] || rooms[rid];
-    if (!room || !room.rounds || !moves) return;
-    const lastRound = room.rounds[room.rounds.length - 1 - navRound].moves;
-    const croppedMoves = movesCrop === 0 ? lastRound : lastRound.slice(0, lastRound.length - movesCrop);
-    setMoves(croppedMoves);
-  }, [roomsHist, specRid, rooms, rid, movesCrop, navRound]);
-
-  useEffect(() => {
-    setMovesCrop(0);
-  }, [navRound]);
-
-  useEffect(() => {
-    if (!specRid) {
-      setMovesCrop(0);
-      setNavRound(0);
-    };
-  }, [specRid]);
-
   const renderRoomTableC4 = () => {
     const room = roomsHist[specRid] || rooms[specRid] || rooms[rid];
     if (!room || !room.players || !moves) return <div className="text_display">Loading...</div>;
     const allMovesLen = room.rounds[room.rounds.length - 1 - navRound].moves.length;
     const allRoundsLen = room.rounds.length;
     const amIFirst = +(Object.keys(room.players)[0] === pid);
-    const lastCol = moves[moves.length - 1 - navRound];
+    const lastCol = moves[moves.length - 1];
     const lastRow = grid.findIndex(row => row[lastCol] !== 0);
+    const helpRow = helpMove !== null ? grid.length - 1 - grid.slice().reverse().findIndex(row => row[helpMove] === 0) : -1;
+
     return <div className="table_menu_container">
-      <div className="grid">
-        {grid.map((row, ri) => (
-          <div key={ri} className="row">
-            {row.map((cell, ci) => (
-              <div key={ci} onClick={() => gameState === "running" && moves.length % 2 != amIFirst && handleMoveC4(ci)}
-                className={`cell ${ri === lastRow && ci === lastCol ? "halo" : ""}`}>
-                {cell === 1 ? "🔴" : cell === 2 ? "🟡" : "⚫"}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
+      <Connect4Canvas amIFirst={amIFirst} lastCol={lastCol} lastRow={lastRow} helpRow={helpRow}/>
       <input type="range" min="0" max={allMovesLen - 1} className="slider"
         value={allMovesLen - 1 - movesCrop}
         onChange={(e) => setMovesCrop(allMovesLen - 1 - Number(e.target.value))}
-        style={{ width: '100%', marginTop: "1.2vh", background: "#888"}}/>
+        style={{ width: "100%", marginTop: "1.2vh", background: "#888"}}/>
       <div className="button_container">
         <button className="button" onClick={() => movesCrop < allMovesLen - 1 && setMovesCrop(movesCrop+1)}>-1</button>
         <div className="text_display">Move {allMovesLen - movesCrop}/{allMovesLen}</div>
@@ -736,6 +930,12 @@ function App() {
         <div className="text_display">Round {allRoundsLen - navRound}/{allRoundsLen}</div>
         <button className="button" onClick={() => 0 < navRound && setNavRound(navRound-1)}>+1</button>
       </div>
+      {gameState === "running" &&
+        <div className="button_container">
+          <button className="button" disabled={navRound || helpMove}
+            onClick={() => socket.emit("get_help_move", { gid: gid, rid: rid })}>HELP</button>
+        </div>
+      }
     </div>
   };
 
@@ -783,9 +983,19 @@ function App() {
     <div className="main_container">
       <div>
         <div className="text_display">Select Mode</div>
+        {gid === "rps" ? (
+          <div className="button_container">
+            <button className="button" onClick={() => startGame("pve", 1)}>PVE</button>
+          </div>
+        ) : gid === "c4" && (
+          <div className="button_container" style={{paddingTop: "2vh"}}>
+            <button className="button" onClick={() => startGame("pve", 1)}>PVE LV1</button>
+            <button className="button" onClick={() => startGame("pve", 2)}>PVE LV2</button>
+            <button className="button" onClick={() => startGame("pve", 3)}>PVE LV3</button>
+          </div>
+        )}
         <div className="button_container">
-          <button className="button" onClick={() => startGame("pve")}>PVE</button>
-          <button className="button" onClick={() => startGame("pvp")}>PVP</button>
+          <button className="button" onClick={() => startGame("pvp", 0)}>PVP</button>
         </div>
       </div>
     </div>
@@ -821,9 +1031,9 @@ function App() {
                     <td>
                       <div className="button_container" style={{ padding: "0" }}>
                         {Object.entries(r.players).map(([k, v], j) => (
-                          <div key={`${i}-${j}`} className="circle_wrapper" onClick={() => setSpecPid(k)}
+                          <div key={`${i}-${j}`} className="circle_wrapper" onClick={() => handleSpecPid(k)}
                             style={{ cursor: "pointer", width: "3.3vh", height: "3.3vh", border: `2px solid ${v.status === "ready" ? "#0F0" : "#F00"}` }}>
-                            <img src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s avatar'`} />
+                            <img src={avatarList[pidPlayer[k].a]} alt={`${pidPlayer[k].n}'s avatar`} />
                           </div>
                         ))}
                       </div>
@@ -831,7 +1041,7 @@ function App() {
                     <td>
                       <button className="button" onClick={() => r.status != "running" ? joinRoom(roomId) : handleSpecRid(roomId)}
                         disabled={r.status != "running" && Object.keys(r.players).length === r.rsize}>
-                        {r.status === "running" ? "👁️" : Object.keys(r.players).length === r.rsize ? "🔒" : "Go"}
+                        {r.status === "running" ? `${Object.keys(r.spec).length || ""}👁️` : Object.keys(r.players).length === r.rsize ? "🔒" : "Go"}
                       </button>
                     </td>
                   </tr>
@@ -852,12 +1062,9 @@ function App() {
         <div className="text_display">Share Link:</div>
         <div className="button_container">
           <input type="text" readOnly className="text_input"
-            value={rid ? `${window.location.origin}/?room=${rid}` : ""}
+            value={rid ? `${window.location.origin}/?gid=${gid}&room=${rid}` : ""}
             onFocus={e => e.target.select()} />
-          <button className="button" disabled={rooms[rid]?.rsize <= Object.keys(rooms[rid]?.players ?? {}).length}
-            onClick={() => handleCopyURL(`${window.location.origin}/?room=${rid}`)}>
-            Copy
-          </button>
+          <button className="button" onClick={() => handleCopyURL(`${window.location.origin}/?gid=${gid}&room=${rid}`)}>Copy</button>
         </div>
         <div className="button_container">
           <div className="text_display">Wins to Win:</div>
@@ -891,8 +1098,8 @@ function App() {
         <button className="button" onClick={() => quitRoom(true)}>Quit</button>
         <ul className="player_list">
           {rooms[rid]?.players &&
-            Object.values(rooms[rid].players).map((v, i) => (
-              <li key={i}>{v.status === "ready" ? "🟢" : "🔴"} {v.name}</li>
+            Object.entries(rooms[rid].players).map(([k, v], i) => (
+              <li key={i}>{v.status === "ready" ? "🟢" : "🔴"} {pidPlayer[k].n}</li>
             ))}
         </ul>
         <button className="button" onClick={handleReady}>{isReady ? "Wait" : "Ready"}</button>
@@ -951,37 +1158,37 @@ function App() {
     {!pid ? (<div className="text_display" style={{ paddingTop: "2.5vh" }}>Loading...</div>) : (
       <div className="header_container">
         <div className="button_container">
+          {0 < rooms[specRid || rid]?.spec?.length && <div className="text_display">{rooms[specRid || rid]?.spec?.length}👁️</div>}
           {gameState != "main" &&
             <button className={displayLead ? "highlighted_button" : "button"} onClick={() => setDisplayLead(prev => !prev)}>🏆</button>
           }
           {avatar && (
-            <div className="circle_wrapper" onClick={() => gameState != "main" && setSpecPid(pid)}
+            <div className="circle_wrapper" onClick={() => handleSpecPid(pid)}
               style={{ cursor: "pointer", marginLeft: "0.8vh", border: `2px solid ${colors[roomRank]}` }}>
               <img src={avatarList[avatar]} alt="Your Avatar" />
             </div>
           )}
           <div className="text_display" style={{ cursor: "pointer" }}
-            onClick={() => gameState != "main" && setSpecPid(pid)}>{name}</div>
+            onClick={() => handleSpecPid(pid)}>{name}</div>
           {!["lobby", "running"].includes(gameState) &&
             <button className={displaySettings ? "highlighted_button" : "button"} onClick={handleSettings}>⚙️</button>
           }
-          <div className="text_display" style={{fontSize: "1.9vh"}}>{specRid}</div>
         </div>
       </div>
     )}
 
     {editingAvatar ? renderEditingAvatar
-      : displaySettings ? renderDisplaySettings
-        : specRid ? renderRoomData
-          : specPid ? renderPlayerData()
-            : displayLead ? renderLead
-              : <>
-                {gameState === "main" && renderMain}
-                {gameState === "menu" && renderMenu}
-                {gameState === "lobby" && renderLobby}
-                {gameState === "running" && renderRunning}
-              </>}
-
+    : displaySettings ? renderDisplaySettings
+    : specRid ? renderRoomData
+    : specPid ? renderPlayerData()
+    : displayLead ? renderLead
+    : <>
+        {gameState === "main" && renderMain}
+        {gameState === "menu" && renderMenu}
+        {gameState === "lobby" && renderLobby}
+        {gameState === "running" && renderRunning}
+      </>
+    }
   </div>;
 }
 

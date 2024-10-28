@@ -251,8 +251,8 @@ tr:nth-child(odd) td {
 }
 
 .circle_wrapper {
-  width: 4.5vh;
-  height: 4.5vh;
+  width: 4vh;
+  height: 4vh;
   border-radius: 50%;
   border: 2px solid #000;
   display: flex;
@@ -278,30 +278,4 @@ tr:nth-child(odd) td {
   margin: 0.3vh;
   width: 20vh;
   font-size: 2.1vh;
-}
-
-/* C4 */
-
-.grid {
-  border: 1px solid #000;
-}
-
-.row {
-  display: flex;
-}
-
-.cell {
-  width: 5vh;
-  height: 5vh;
-  border: 1px solid #000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 4vh;
-}
-
-.halo {
-  text-shadow: 
-    0 0 20px rgba(255, 255, 255, 0.7);
 }

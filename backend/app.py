@@ -78,13 +78,12 @@ def clean_room_from_player(gid, rid, pid):
     
     room = rooms[gid][rid]
     if pid not in room["players"]:
-        log.warning(f"Player with pid: {pid} is not in room {rid}.")
+        log.warning(f"Player | pid: {pid:>10} | is not in room | rid: {rid}.")
         return
 
-    name = pid_player[pid]["n"]
     del room["players"][pid]
     leave_room(rid)
-    log.info(f"Player {name} (pid: {pid}) left room {rid}")
+    log.info(f"Player | pid: {pid:>10} | left room | rid: {rid}")
     if room["status"] != "waiting" and all(v["is_ai"] for v in room["players"].values()):
         del rooms[gid][rid]
         log.info(f"Deleted room {rid} due to insufficient players.")
@@ -97,10 +96,9 @@ def clean_rooms_from_player(pid):
     for gid in rooms:
         for rid, room in rooms[gid].items():
             if pid in room["players"]:
-                name = pid_player[pid]["n"]
                 del room["players"][pid]
                 leave_room(rid)
-                log.info(f"Player {name} (pid: {pid}) left room {rid}")
+                log.info(f"Player | pid: {pid:>10} | left room | rid: {rid}")
                 if room["status"] != "waiting" and all(v["is_ai"] for v in room["players"].values()):
                     rooms_to_delete.append(rid)
                 elif room["status"] == "waiting" and len(room["players"]) == 0:
@@ -113,25 +111,25 @@ def clean_rooms_from_player(pid):
 def generate_random_name():
     adjectives = ["Brave", "Clever", "Swift", "Mighty", "Bold"]
     animals = ["Tiger", "Falcon", "Wolf", "Eagle", "Lion"]
-    return f"{random.choice(adjectives)}-{random.choice(animals)}-{random.randint(1000, 9999)}"
+    return f"{random.choice(adjectives)}-{random.choice(animals)}-{random.randint(100, 999)}"
 
 def check_pid(sid, pid, ep):
     if pid:
         return True
     socketio.emit("warning", {"message": f"Your pid is not registered. To debug, please try 1)reload page 2)empty cache 3)connect from another device 4)pray 5)call the BOSS"}, room=sid)
-    log.warning(f"[Endpoint: {ep}] Player (sid: {sid}) don't have a valid pid.")
+    log.warning(f"[Endpoint: {ep}] Player | sid: {sid} | don't have a valid pid.")
 
 def check_rid(gid, rid, pid, sid, ep):
     if rid in rooms[gid]:
         return True
     socketio.emit("warning", {"message": f"Room {rid} not found"}, room=sid)
-    log.warning(f"[Endpoint: {ep}] Player (sid: {sid}) (pid: {pid}) tried to interact with invalid room {rid}.")
+    log.warning(f"[Endpoint: {ep}] Player | sid: {sid} | pid: {pid:>10} | tried to interact with invalid room | rid: {rid}.")
 
 def check_pid_in_room(gid, rid, pid, sid, ep):
     if pid in rooms[gid][rid]["players"]:
         return True
     socketio.emit("warning", {"message": f"You are not in room {rid}"}, room=sid)
-    log.warning(f"[Endpoint: {ep}] Player (sid: {sid}) (pid: {pid}) tried to interact with room {rid} but is not in it.")
+    log.warning(f"[Endpoint: {ep}] Player | sid: {sid} | pid: {pid:>10} | tried to interact with room | rid: {rid} | but is not in it.")
 
 # blackbox fun
 def get_result(player_move):
@@ -153,7 +151,7 @@ def add_room(gid, rid, pid, status):
             "players": {}, "rounds": [{"index": 1, "winner": None, "moves": []}],
             "grid": [[0 for _ in range(7)] for _ in range(6)]}
 
-    log.info(f"Player (pid: {pid}) created new room {rid}")
+    log.info(f"Player | pid: {pid:>10} | created new room | rid: {rid}")
 
 def add_player(gid, rid, pid, is_ai, status):
     room = rooms[gid][rid]
@@ -167,13 +165,22 @@ def add_player(gid, rid, pid, is_ai, status):
             room["players"][pid] = {"team": len(room["players"]) + 1, "is_ai": is_ai, "status": status, "w": 0, "l": 0}
 
         update_db(ROOMS_FILE[gid], rooms[gid])
-    if len(room["players"]) == 1:
-        log.info(f"Player {pid} created room {rid}.")
-    else:
-        log.info(f"{'AI' if is_ai else 'Player'} {pid} joined room {rid}.")
+    if len(room["players"]) != 1:
+        log.info(f"{'AI' if is_ai else 'Player'} | pid: {pid:>10} | joined room | rid: {rid}.")
 
 def add_round(gid, rid, rwinner, cwinner):
     room = rooms[gid][rid]
+
+    emit_data = {"rid": rid, "game_over": False, "winner": rwinner}
+
+    if gid == "rps":
+        socketio.emit("game_result_rps", emit_data, room=rid)
+        update_db(ROOMS_FILE[gid], rooms[gid])
+        time.sleep(1)
+    elif gid == "c4":
+        socketio.emit("game_result_c4", emit_data, room=rid)
+        update_db(ROOMS_FILE[gid], rooms[gid])
+        time.sleep(3)
 
     if gid == "rps":
         for v in room["players"].values():
@@ -288,10 +295,10 @@ def handle_set_pid(data):
     pid = data.get("pid")
     sid = request.sid
     name = pid_player.get(pid, {}).get("n") or generate_random_name()
-    avatar = pid_player.get(pid, {}).get("a") or random.choice(avatars)
+    avatar = pid_player.get(pid, {}).get("a") or random.choice([a for a in avatars if a != "ai.svg"])
     if pid not in pid_player:
         pid_player[pid] = {"n": name, "a": avatar}
-        log.info(f"New player {name} (pid: {pid}) added to players db.")
+        log.info(f"New player | pid: {pid:>10} | added to players db.")
         update_db(PLAYERS_FILE, pid_player)
     sid_pid[sid] = pid
     save_json(SIDNAME_FILE, sid_pid)
@@ -315,12 +322,12 @@ def handle_edit_name(data):
             msg = "name is already taken"
         elif not new_name.isalnum() and '-' not in new_name:
             msg = "name must be alphanumeric with hyphens"
-        log.warning(f"Player {old_name} (pid: {pid}) tried to update his name to {new_name}, but {msg}.")
+        log.warning(f"Player | pid: {pid:>10} | tried to update his name to {new_name}, but {msg}.")
         return
 
     pid_player[pid]["n"] = new_name
     update_db(PLAYERS_FILE, pid_player)
-    log.info(f"Player {old_name} (pid: {pid}) updated to {new_name} in players db.")
+    log.info(f"Player | pid: {pid:>10} | updated name to {new_name} in players db.")
 
 @socketio.on("set_avatar")
 def handle_set_avatar(data):
@@ -329,17 +336,25 @@ def handle_set_avatar(data):
         return
 
     avatar = data.get("avatar")
-    name = pid_player.get(pid, {}).get("n")
 
     if avatar not in avatars:
         socketio.emit("warning", {"message": "Invalid avatar"}, room=sid)
-        log.warning(f"Player {name} (pid: {pid}) attempted to set invalid avatar {avatar}.")
+        log.warning(f"Player | pid: {pid:>10} | attempted to set invalid avatar {avatar}.")
         return
 
     pid_player[pid]["a"] = avatar
     update_db(PLAYERS_FILE, pid_player)
-    log.info(f"Player {name} (pid: {pid}) changed avatar to {avatar} in room {room}.")
+    log.info(f"Player | pid: {pid:>10} | changed avatar to {avatar}.")
     socketio.emit("avatar_set", avatar, room=sid)
+
+@socketio.on("check_link")
+def handle_check_link(data):
+    gid = data.get("gid")
+    rid = data.get("rid")
+    sid = request.sid
+    if gid in rooms and rid in rooms[gid]:
+        socketio.emit("link_checked", {"rooms": rooms[gid], "isLinkValid": True}, room=sid)
+    log.info(f"Player | sid: {sid} | checked link for room | rid: {rid}.")
 
 @socketio.on("create_room")
 def handle_create_room(data):
@@ -351,9 +366,10 @@ def handle_create_room(data):
     clean_rooms_from_player(pid)
     rid = "".join(random.choices(string.ascii_letters + string.digits, k=15))
     if mode == "pve":
+        lvl = data.get("lvl")
         add_room(gid, rid, pid, "running")
         add_player(gid, rid, pid, False, "ready")
-        add_player(gid, rid, "AI1", True, "ready")
+        add_player(gid, rid, f"AI{lvl}", True, "ready")
         join_room(rid)
         socketio.emit("game_start", rid, room=rid)
     elif mode == "pvp":
@@ -374,12 +390,12 @@ def handle_join_room(data):
     room = rooms[gid][rid]
     if room["status"] != "waiting":
         socketio.emit("warning", {"message": f"Room {rid} is not available"}, room=sid)
-        log.warning(f"Player (pid: {pid}) attempted to join room {rid}, but it is not available.")
+        log.warning(f"Player | pid: {pid:>10} | attempted to join room | rid: {rid} | but it is not available.")
         return
     
     if room["rsize"] <= len(room["players"]):
         socketio.emit("warning", {"message": f"Room {rid} is full"}, room=sid)
-        log.warning(f"Player (pid: {pid}) attempted to join room {rid}, but it is full.")
+        log.warning(f"Player | pid: {pid:>10} | attempted to join room | rid: {rid} | but it is full.")
         return
 
     add_player(gid, rid, pid, False, "waiting")
@@ -398,16 +414,16 @@ def handle_update_room(data):
 
     if update_label == "wins2win" and not 1 <= rooms[gid][rid]["wins2win"] + update <= 5:
         socketio.emit("warning", {"message": "Invalid wins to win"}, room=sid)
-        log.warning(f"Player (pid: {pid}) attempted to set invalid wins to win in room {rid}.")
+        log.warning(f"Player | pid: {pid:>10} | attempted to set invalid wins to win in room | rid: {rid}.")
         return
     
     if update_label == "rsize" and not 2 <= rooms[gid][rid]["rsize"] + update <= 5:
         socketio.emit("warning", {"message": "Invalid room size"}, room=sid)
-        log.warning(f"Player (pid: {pid}) attempted to set invalid room size in room {rid}.")
+        log.warning(f"Player | pid: {pid:>10} | attempted to set invalid room size in room | rid: {rid}.")
         return
 
     rooms[gid][rid][update_label] += update
-    log.info(f"Player (pid: {pid}) updated {update_label} to {rooms[gid][rid][update_label]} in room {rid}.")
+    log.info(f"Player | pid: {pid:>10} | updated {update_label} to {rooms[gid][rid][update_label]} in room | rid: {rid}.")
     update_db(ROOMS_FILE[gid], rooms[gid])
 
 @socketio.on("manage_ais")
@@ -437,7 +453,7 @@ def handle_player_ready(data):
 
     status = data.get("status")
     rooms[gid][rid]["players"][pid]["status"] = status
-    log.info(f"Player (pid: {pid}) in room {rid} is {status}.")
+    log.info(f"Player | pid: {pid:>10} | in room | rid: {rid} | is {status}.")
 
     all_ready = all(p["status"] == "ready" for p in rooms[gid][rid]["players"].values())
     if all_ready and len(rooms[gid][rid]["players"]) == rooms[gid][rid]["rsize"]:
@@ -458,8 +474,10 @@ def handle_update_spec(data):
         if rooms[gid][rid]["max_spec"] < len(rooms[gid][rid]["spec"]):
             rooms[gid][rid]["max_spec"] = len(rooms[gid][rid]["spec"])
     else:
-        rooms.get(gid, {}).get(rid, {}).get("spec", set()).discard(pid)
-    log.info(f"Player (pid: {pid}) in room {rid} {'join' if new_spec else 'quit'} spec.")
+        spec = rooms.get(gid, {}).get(rid, {}).get("spec", set())
+        if pid in spec:
+            spec.remove(pid)
+    log.info(f"Player | pid: {pid:>10} | in room | rid: {rid} | {'join' if new_spec else 'quit'} spec.")
     update_db(ROOMS_FILE[gid], rooms[gid])
 
 @socketio.on("quit_game")
@@ -478,10 +496,10 @@ def handle_disconnect():
     save_json(SIDNAME_FILE, sid_pid)
 
     if not pid:
-        log.warning(f"Player (sid: {sid}) (pid: {pid}) disconnected but was not found in sid_pid.")
+        log.warning(f"Player | sid: {sid} | pid: {pid:>10} | disconnected but was not found in sid_pid.")
         return
 
-    log.info(f"Client disconnected (sid: {sid}) (pid: {pid})")
+    log.info(f"Client disconnected | sid: {sid} | pid: {pid:>10}")
     clean_rooms_from_player(pid)
     for gid in rooms:
         update_db(ROOMS_FILE[gid], rooms[gid])
@@ -496,7 +514,7 @@ def handle_make_move(data):
     room = rooms[gid][rid]
     if room["status"] != "running":
         socketio.emit("warning", {"message": "Game is not running"}, room=sid)
-        log.warning(f"Player (pid: {pid}) tried to make a move in room {rid}, but game {gid} is not running.")
+        log.warning(f"Player | pid: {pid:>10} | tried to make a move in room | rid: {rid} | but game {gid} is not running.")
         return
 
     if gid == "rps":
@@ -514,7 +532,7 @@ def handle_make_move(data):
 
 def handle_rps_move(gid, rid, pid, room, move):
     room["players"][pid]["cmove"] = move
-    log.info(f"Player (pid: {pid}) in room {rid} made move: {move}")
+    log.info(f"Player | pid: {pid:>10} | in room | rid: {rid} made move: {move}")
     for aiid in {k for k, v in room["players"].items() if v["is_ai"]}:
         ai_move = random.choice(["R", "P", "S"])
         room["players"][aiid]["cmove"] = ai_move
@@ -566,8 +584,8 @@ def handle_rps_move(gid, rid, pid, room, move):
 ##     ##  ##     ##    ##       ## 
 ##     ## ####     ######        ## 
 
-def check_win(grid, move_index):
-    p = move_index
+def check_win(grid, turn):
+    p = turn
     g = grid
     r0, r1, r2, r3, r4, r5 = g[0], g[1], g[2], g[3], g[4], g[5]
     for r in [r0, r1, r2, r3, r4, r5]:  # ─
@@ -668,7 +686,7 @@ def remove_move_in_place(grid, col):
             return True
     return False
 
-def minimax(transposition_table, grid, depth, alpha, beta, maximizingPlayer, ai_piece, player_piece):
+def minimax(transposition_table, grid, depth, alpha, beta, maximizingPlayer, ai_turn, player_piece):
     grid_key = str(grid)
     if grid_key in transposition_table:
         return transposition_table[grid_key]
@@ -677,21 +695,21 @@ def minimax(transposition_table, grid, depth, alpha, beta, maximizingPlayer, ai_
     is_terminal = is_terminal_node(grid)
     if depth == 0 or is_terminal:
         if is_terminal:
-            if check_win(grid, ai_piece):
+            if check_win(grid, ai_turn):
                 return (None, 100000000000000)
             elif check_win(grid, player_piece):
                 return (None, -10000000000000)
             else:  # Game is over, no more valid moves
                 return (None, 0)
         else:  # Depth is zero
-            return (None, score_position(grid, ai_piece))
+            return (None, score_position(grid, ai_turn))
 
     if maximizingPlayer:
         value = -math.inf
         best_column = random.choice(valid_locations)
         for col in valid_locations:
-            if add_move_in_place(grid, col, ai_piece):
-                new_score = minimax(transposition_table, grid, depth-1, alpha, beta, False, ai_piece, player_piece)[1]
+            if add_move_in_place(grid, col, ai_turn):
+                new_score = minimax(transposition_table, grid, depth-1, alpha, beta, False, ai_turn, player_piece)[1]
                 remove_move_in_place(grid, col)
                 if new_score > value:
                     value = new_score
@@ -707,7 +725,7 @@ def minimax(transposition_table, grid, depth, alpha, beta, maximizingPlayer, ai_
         best_column = random.choice(valid_locations)
         for col in valid_locations:
             if add_move_in_place(grid, col, player_piece):
-                new_score = minimax(transposition_table, grid, depth-1, alpha, beta, True, ai_piece, player_piece)[1]
+                new_score = minimax(transposition_table, grid, depth-1, alpha, beta, True, ai_turn, player_piece)[1]
                 remove_move_in_place(grid, col)
                 if new_score < value:
                     value = new_score
@@ -718,19 +736,32 @@ def minimax(transposition_table, grid, depth, alpha, beta, maximizingPlayer, ai_
         transposition_table[grid_key] = (best_column, value)
         return best_column, value
 
-def add_move_temp(grid, move, move_index):
-    for row in reversed(grid):
-        if row[move] == 0:
-            row[move] = move_index
-            return True
-    return False
+def get_ai_move(grid, ai_turn, depth):
+    t = time.time()
+    opponent_piece = 1 if ai_turn == 2 else 2
 
-def get_ai_move(grid, ai_piece, depth=5):
-    opponent_index = 1 if ai_piece == 2 else 2
-    column, minimax_score = minimax({}, grid, depth, -math.inf, math.inf, True, ai_piece, opponent_index)
+    # 1. Check for AI's immediate winning move
+    for col in get_valid_locations(grid):
+        if add_move_in_place(grid, col, ai_turn):
+            if check_win(grid, ai_turn):
+                remove_move_in_place(grid, col)
+                return col, round(time.time() - t, 3)  # Immediate win found
+            remove_move_in_place(grid, col)
+
+    # 2. Check for opponent's immediate winning move and block it
+    for col in get_valid_locations(grid):
+        if add_move_in_place(grid, col, opponent_piece):
+            if check_win(grid, opponent_piece):
+                remove_move_in_place(grid, col)
+                return col, round(time.time() - t, 3)  # Block opponent's win
+            remove_move_in_place(grid, col)
+
+    # 3. Use minimax if no immediate win or block is found
+    column, minimax_score = minimax({}, grid, depth, -math.inf, math.inf, True, ai_turn, opponent_piece)
     if column is None:
         column = random.choice(get_valid_locations(grid))
-    return column
+
+    return column, round(time.time() - t, 3)
 
  ######  ##       
 ##    ## ##    ## 
@@ -740,33 +771,59 @@ def get_ai_move(grid, ai_piece, depth=5):
 ##    ##       ## 
  ######        ## 
 
-def add_move(room, pid, grid, move, move_index):
-    if len(room["rounds"][-1]["moves"]) % 2 == move_index - 1:
+@socketio.on("get_help_move")
+def handle_get_help_move(data):
+    gid, rid, pid, ep = data.get("gid"), data.get("rid"), sid_pid.get(sid := request.sid), "help_move"
+    if not check_pid(sid, pid, ep) or not check_rid(gid, rid, pid, sid, ep) or not check_pid_in_room(gid, rid, pid, sid, ep):
+        return
+
+    if gid != "c4":
+        socketio.emit("warning", {"message": "Help move is only available for Connect 4"}, room=sid)
+        log.warning(f"Player | pid: {pid:>10} | tried to get help move in room | rid: {rid} | but it is not available for game {gid}.")
+        return
+
+    room = rooms[gid][rid]
+    turn = 1 if pid == list(room["players"])[0] else 2
+    grid = room["grid"]
+    help_move, time_taken = get_ai_move(grid, turn, 6)
+    socketio.emit("help_move", help_move, room=sid)
+    log.info(f"Player | pid: {pid:>10} | rid: {rid} | got help: {help_move} in {time_taken}s.")
+
+def add_move(room, rid, pid, grid, move, turn, time_taken=None):
+    if len(room["rounds"][-1]["moves"]) % 2 == turn - 1:
         for row in reversed(grid):
             if row[move] == 0:
-                row[move] = move_index
+                row[move] = turn
                 room["rounds"][-1]["moves"].append(move)
-                log.info(f"Player (pid: {pid}) (move_index: {move_index}) made move: {move}")
+                text = f"Player | pid: {pid:>10} | rid: {rid} | turn: {turn} | made move: {move}"
+                if time_taken:
+                    text += f" in {time_taken}s"
+                log.info(text)
                 return True
 
 def handle_c4_move(gid, rid, pid, room, move):
+    if room["rounds"][-1]["winner"]:
+        socketio.emit("warning", {"message": "Round is over"}, room=rid)
+        log.warning(f"Player | pid: {pid:>10} | made a move in room | rid: {rid} | but round is over.")
+        return
     rwinner = None
     p1, p2 = list(room["players"])
-    move_index = 1 if pid == p1 else 2
+    turn = 1 if pid == p1 else 2
     grid = room["grid"]
 
-    if add_move(room, pid, grid, move, move_index) and check_win(grid, move_index):
+    if add_move(room, rid, pid, grid, move, turn) and check_win(grid, turn):
         rwinner = pid
 
-    if not rwinner and not is_draw(grid) and "AI1" in room["players"]:
+    ai_name = next((k for k in room["players"] if k.startswith("AI")), None)
+    if not rwinner and not is_draw(grid) and ai_name:
 
-        t = time.time()
-        ai_index = 1 if "AI1" == p1 else 2
-        ai_move = get_ai_move(grid, ai_index, 5)
-        log.info(f"AI1 made move: {ai_move} in {round(time.time() - t, 3)}s")
+        ai_turn = 1 if ai_name == p1 else 2
+        ai_lvl = int(ai_name[2:])
+        lvl_depth = min({1: 3, 2: 4, 3: 5}[ai_lvl], 5)
+        ai_move, time_taken = get_ai_move(grid, ai_turn, lvl_depth)
 
-        if add_move(room, "AI1", grid, ai_move, ai_index) and check_win(grid, ai_index):
-            rwinner = "AI1"
+        if add_move(room, rid, ai_name, grid, ai_move, ai_turn, time_taken) and check_win(grid, ai_turn):
+            rwinner = ai_name
 
     if not rwinner and not is_draw(grid):
         emit_data = {"rid": rid, "game_over": False, "winner": None}
