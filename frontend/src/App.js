@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 import { io } from "socket.io-client";
 
-const SOCKET_SERVER_URL = "http://57.129.44.194:5001";
+const SERVER_URL = "http://57.129.44.194:5001";
 
 function App() {
   const [editingName, setEditingName] = useState(false);
@@ -48,7 +48,7 @@ function App() {
   const colors = ["#0AF", "#F00", "#0C3", "#DD0", "#B0D"]
 
   useEffect(() => {
-    const newSocket = io(SOCKET_SERVER_URL, {
+    const newSocket = io(SERVER_URL, {
       transports: ["websocket"],  // Force WebSocket transport
       reconnectionAttempts: 5,    // Optional: Limit reconnection attempts
     });
@@ -73,12 +73,12 @@ function App() {
       console.log(`Avatar successfully updated from ${avatar} to ${d}`);
     });
 
-    fetch(`${SOCKET_SERVER_URL}/avatars/batch`)
+    fetch(`${SERVER_URL}/avatars/batch`)
       .then(r => r.json())
       .then(d => { setAvatarList(d) })
       .catch(e => { console.error("Error fetching avatars/batch:", e) });
 
-    fetch(`${SOCKET_SERVER_URL}/players/batch`)
+    fetch(`${SERVER_URL}/players/batch`)
       .then(r => r.json())
       .then(d => { setPidPlayer(d) })
       .catch(e => { console.error("Error fetching players/batch:", e) });
@@ -271,7 +271,7 @@ function App() {
   };
 
   const joinGame = (selected_gid, status) => {
-    fetch(`${SOCKET_SERVER_URL}/rooms/batch?gid=${selected_gid}`)
+    fetch(`${SERVER_URL}/rooms/batch?gid=${selected_gid}`)
       .then(r => r.json())
       .then(d => { setRoomsHist(d) })
       .catch(e => { console.error("Error fetching rooms/batch:", e) });
